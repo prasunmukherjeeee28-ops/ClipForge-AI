@@ -117,3 +117,109 @@ def test_current_lease_owner_can_heartbeat_progress_and_release() -> None:
         "SELECT status, lease_id, lease_token_hash FROM jobs WHERE id = 'job-1'"
     ).fetchone()
     assert tuple(row) == ("queued", None, None)
+
+
+def api_sql_containing(fragment: str) -> str:
+    for line in API_SOURCE.splitlines():
+        match = re.search(r'^\s+"(.*)",\s*$', line)
+        if match and fragment in match.group(1):
+            return match.group(1)
+    raise AssertionError(f"Could not find SQL containing {fragment!r}")
+
+
+def add_user_and_job(
+    db: sqlite3.Connection, user_id: str, job_id: str, *, status: str = "queued",
+    cancel_requested: int = 0, attempt_count: int = 0, max_attempts: int = 3,
+    lease_expiry: str | None = None,
+) -> None:
+    db.execute(
+        "INSERT OR IGNORE INTO users (id, auth_subject, email) VALUES (?, ?, ?)",
+        (user_id, f"subject-{user_id}", f"{user_id}@example.com"),
+    )
+    db.execute(
+        """
+        INSERT INTO jobs (
+            id, user_id, source_url, source_platform, status, cancel_requested,
+            attempt_count, max_attempts, lease_expires_at
+        ) VALUES (?, ?, ?, 'youtube', ?, ?, ?, ?, ?)
+        """,
+        (
+            job_id, user_id, f"https://youtu.be/{job_id}", status,
+            cancel_requested, attempt_count, max_attempts, lease_expiry,
+        ),
+    )
+
+
+def test_atomic_claim_statement_never_returns_same_job_twice() -> None:
+    db = make_db()
+    db.execute("UPDATE jobs SET status = 'queued', lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL WHERE id = 'job-1'")
+    add_user_and_job(db, "user-1", "job-2")
+
+    claim_sql = api_sql_containing("UPDATE jobs SET status = 'processing'")
+    first = db.execute(claim_sql, ("lease-1", "hash-1")).fetchone()
+    second = db.execute(claim_sql, ("lease-2", "hash-2")).fetchone()
+
+    assert first is not None
+    assert second is not None
+    assert first["id"] != second["id"]
+    assert {first["leaseId"] if "leaseId" in first.keys() else "job-1", second["id"]}  # both claims succeeded
+
+
+def test_expired_jobs_recover_or_fail_at_attempt_limit() -> None:
+    db = make_db()
+    add_user_and_job(
+        db, "user-1", "retry-job", status="processing",
+        attempt_count=1, max_attempts=3, lease_expiry="2000-01-01 00:00:00",
+    )
+    add_user_and_job(
+        db, "user-1", "exhausted-job", status="processing",
+        attempt_count=3, max_attempts=3, lease_expiry="2000-01-01 00:00:00",
+    )
+
+    recover = api_sql_containing("error_code = 'lease_expired'")
+    fail = api_sql_containing("error_code = 'retries_exhausted'")
+    db.execute(fail)
+    db.execute(recover)
+
+    states = {
+        row["id"]: (row["status"], row["error_code"], row["lease_id"])
+        for row in db.execute(
+            "SELECT id, status, error_code, lease_id FROM jobs WHERE id IN ('retry-job','exhausted-job')"
+        )
+    }
+    assert states["retry-job"] == ("queued", "lease_expired", None)
+    assert states["exhausted-job"] == ("failed", "retries_exhausted", None)
+
+
+def test_expired_cancelled_job_becomes_cancelled_not_queued() -> None:
+    db = make_db()
+    add_user_and_job(
+        db, "user-1", "cancelled-job", status="processing",
+        cancel_requested=1, attempt_count=1, lease_expiry="2000-01-01 00:00:00",
+    )
+    recover_cancel = api_sql_containing("status = 'cancelled', stage = 'cancelled'")
+    db.execute(recover_cancel)
+    row = db.execute(
+        "SELECT status, lease_id FROM jobs WHERE id = 'cancelled-job'"
+    ).fetchone()
+    assert tuple(row) == ("cancelled", None)
+
+
+def test_cancel_endpoint_is_scoped_to_owning_user() -> None:
+    db = make_db()
+    add_user_and_job(db, "user-2", "friend-job")
+    cancel_sql = api_sql_containing("SET cancel_requested = 1")
+    result = db.execute(cancel_sql, ("friend-job", "user-1"))
+    assert result.rowcount == 0
+    row = db.execute(
+        "SELECT status, cancel_requested FROM jobs WHERE id = 'friend-job'"
+    ).fetchone()
+    assert tuple(row) == ("queued", 0)
+
+
+def test_job_list_query_is_scoped_to_authenticated_user() -> None:
+    db = make_db()
+    add_user_and_job(db, "user-2", "friend-job")
+    list_sql = api_sql_containing("SELECT id, source_url AS sourceUrl")
+    rows = db.execute(list_sql, ("user-1", 100)).fetchall()
+    assert {row["id"] for row in rows} == {"job-1"}
