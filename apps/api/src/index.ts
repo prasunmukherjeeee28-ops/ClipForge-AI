@@ -164,6 +164,43 @@ app.post("/internal/processor/progress", async (c) => {
   return c.json({ ok: true });
 });
 
+app.post("/internal/processor/source-metadata", async (c) => {
+  const body = parseProcessorBody<{
+    jobId?: string; leaseId?: string; leaseToken?: string; sourceId?: string;
+    sourceType?: string; title?: string; durationSeconds?: number | null; publishedAt?: string | null;
+  }>(c);
+  const duration = body?.durationSeconds;
+  const publishedAt = body?.publishedAt;
+  if (
+    !body?.jobId || !body.leaseId || !body.leaseToken ||
+    typeof body.sourceId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(body.sourceId) ||
+    (body.sourceType !== "video" && body.sourceType !== "live") ||
+    typeof body.title !== "string" || !body.title.trim() || body.title.trim().length > 200 ||
+    (duration !== undefined && duration !== null &&
+      (typeof duration !== "number" || !Number.isInteger(duration) || duration < 0 || duration > 604800)) ||
+    (publishedAt !== undefined && publishedAt !== null &&
+      (typeof publishedAt !== "string" || publishedAt.length > 40 || !/^\\d{4}-\\d{2}-\\d{2}T/.test(publishedAt) || !Number.isFinite(Date.parse(publishedAt))))
+  ) {
+    return jsonError(c, "Invalid source metadata payload.", 400);
+  }
+
+  const tokenHash = await sha256Hex(body.leaseToken);
+  const result = await c.env.DB.prepare(
+    "UPDATE jobs SET source_type = ?1, source_id = ?2, title = ?3, source_duration_seconds = ?4, source_published_at = ?5, source_verified_at = CURRENT_TIMESTAMP, stage = 'source_metadata_verified', progress = MAX(progress, 5), updated_at = CURRENT_TIMESTAMP WHERE id = ?6 AND lease_id = ?7 AND lease_token_hash = ?8 AND status = 'processing' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP",
+  ).bind(
+    body.sourceType,
+    body.sourceId,
+    body.title.trim(),
+    duration ?? null,
+    publishedAt ?? null,
+    body.jobId,
+    body.leaseId,
+    tokenHash,
+  ).run();
+  if (!result.meta.changes) return jsonError(c, "Lease is invalid, expired, or cancellation was requested.", 409);
+  return c.json({ ok: true, sourceMetadataSaved: true });
+});
+
 app.post("/internal/processor/release", async (c) => {
   const body = parseProcessorBody<{ jobId?: string; leaseId?: string; leaseToken?: string }>(c);
   if (!body?.jobId || !body.leaseId || !body.leaseToken) return jsonError(c, "Invalid release payload.", 400);
@@ -331,7 +368,7 @@ app.get("/api/jobs", async (c) => {
   const requestedLimit = Number(c.req.query("limit") ?? 50);
   const limit = Math.min(Math.max(Number.isFinite(requestedLimit) ? Math.trunc(requestedLimit) : 50, 1), 100);
   const result = await c.env.DB.prepare(
-    "SELECT id, source_url AS sourceUrl, source_platform AS sourcePlatform, source_type AS sourceType, title, status, progress, stage, error_code AS errorCode, created_at AS createdAt, updated_at AS updatedAt FROM jobs WHERE user_id = ?1 ORDER BY created_at DESC LIMIT ?2",
+    "SELECT id, source_url AS sourceUrl, source_platform AS sourcePlatform, source_type AS sourceType, source_id AS sourceId, source_duration_seconds AS sourceDurationSeconds, source_published_at AS sourcePublishedAt, source_verified_at AS sourceVerifiedAt, title, status, progress, stage, error_code AS errorCode, created_at AS createdAt, updated_at AS updatedAt FROM jobs WHERE user_id = ?1 ORDER BY created_at DESC LIMIT ?2",
   )
     .bind(user.id, limit)
     .all();
@@ -340,7 +377,7 @@ app.get("/api/jobs", async (c) => {
 
 app.get("/api/jobs/:jobId", async (c) => {
   const job = await c.env.DB.prepare(
-    "SELECT id, source_url AS sourceUrl, source_platform AS sourcePlatform, source_type AS sourceType, title, status, progress, stage, error_code AS errorCode, created_at AS createdAt, updated_at AS updatedAt FROM jobs WHERE id = ?1 AND user_id = ?2",
+    "SELECT id, source_url AS sourceUrl, source_platform AS sourcePlatform, source_type AS sourceType, source_id AS sourceId, source_duration_seconds AS sourceDurationSeconds, source_published_at AS sourcePublishedAt, source_verified_at AS sourceVerifiedAt, title, status, progress, stage, error_code AS errorCode, created_at AS createdAt, updated_at AS updatedAt FROM jobs WHERE id = ?1 AND user_id = ?2",
   )
     .bind(c.req.param("jobId"), c.get("user").id)
     .first();
