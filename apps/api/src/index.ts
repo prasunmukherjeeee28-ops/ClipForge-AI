@@ -155,7 +155,7 @@ app.post("/internal/processor/release", async (c) => {
   if (!body?.jobId || !body.leaseId || !body.leaseToken) return jsonError(c, "Invalid release payload.", 400);
   const tokenHash = await sha256Hex(body.leaseToken);
   const result = await c.env.DB.prepare(
-    "UPDATE jobs SET status = CASE WHEN cancel_requested = 1 THEN 'cancelled' ELSE 'queued' END, stage = CASE WHEN cancel_requested = 1 THEN 'cancelled' ELSE 'queued' END, progress = CASE WHEN cancel_requested = 1 THEN progress ELSE 0 END, attempt_count = CASE WHEN cancel_requested = 1 THEN attempt_count ELSE MAX(0, attempt_count - 1) END, lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'processing'",
+    "UPDATE jobs SET status = CASE WHEN cancel_requested = 1 THEN 'cancelled' ELSE 'queued' END, stage = CASE WHEN cancel_requested = 1 THEN 'cancelled' ELSE 'queued' END, progress = CASE WHEN cancel_requested = 1 THEN progress ELSE 0 END, attempt_count = CASE WHEN cancel_requested = 1 THEN attempt_count ELSE MAX(0, attempt_count - 1) END, lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, error_code = CASE WHEN cancel_requested = 1 THEN error_code ELSE NULL END, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'processing'",
   ).bind(body.jobId, body.leaseId, tokenHash).run();
   if (!result.meta.changes) return jsonError(c, "Lease is no longer valid.", 409);
   return c.json({ ok: true, released: true });
@@ -315,8 +315,11 @@ app.post("/api/jobs/:jobId/cancel", async (c) => {
     if (!exists) return jsonError(c, "Job not found.", 404);
     return c.json({ jobId: id, status: exists.status, cancelled: false });
   }
- 
-  return c.json({ jobId: id, status: "cancellation_requested", cancelled: true });
+
+  const updated = await c.env.DB.prepare(
+    "SELECT status FROM jobs WHERE id = ?1 AND user_id = ?2",
+  ).bind(id, user.id).first<{ status: string }>();
+  return c.json({ jobId: id, status: updated?.status ?? "processing", cancelled: true });
 });
 
 app.post("/api/jobs/cancel-all", async (c) => {
