@@ -36,11 +36,11 @@ async function verifyProcessorSignature(c: AppContext): Promise<boolean> {
   const secret = c.env.PROCESSOR_SHARED_SECRET;
   const timestamp = c.req.header("X-Processor-Timestamp") ?? "";
   const signature = hexToBytes(c.req.header("X-Processor-Signature") ?? "");
-  if (!secret || !/^\\d{10}$/.test(timestamp) || !signature) return false;
+  if (!secret || !/^\d{10}$/.test(timestamp) || !signature) return false;
   const seconds = Number(timestamp);
   if (!Number.isFinite(seconds) || Math.abs(Date.now() / 1000 - seconds) > 300) return false;
   const body = await c.req.text();
-  const canonical = [timestamp, c.req.method.toUpperCase(), new URL(c.req.url).pathname, body].join("\\n");
+  const canonical = [timestamp, c.req.method.toUpperCase(), new URL(c.req.url).pathname, body].join("\n");
   const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
   const valid = await crypto.subtle.verify("HMAC", key, signature, encoder.encode(canonical));
   if (valid) c.set("processorBody", body);
