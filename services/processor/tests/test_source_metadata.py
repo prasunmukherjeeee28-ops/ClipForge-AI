@@ -71,11 +71,15 @@ def test_current_lease_can_persist_source_metadata() -> None:
     assert row[7] == 5
 
 
-def test_expired_or_replaced_lease_cannot_persist_source_metadata() -> None:
+def test_expired_lease_cannot_persist_source_metadata() -> None:
     db = make_db()
-    expired = db.execute(source_metadata_sql(), payload()).rowcount
-    assert expired == 1
+    db.execute("UPDATE jobs SET lease_expires_at = datetime('now', '-1 second') WHERE id = 'job-1'")
+    result = db.execute(source_metadata_sql(), payload())
+    assert result.rowcount == 0
 
+
+def test_replaced_lease_cannot_persist_source_metadata() -> None:
+    db = make_db()
     db.execute(
         "UPDATE jobs SET lease_id = 'lease-new', lease_token_hash = 'hash-new', "
         "lease_expires_at = datetime('now', '+90 seconds') WHERE id = 'job-1'"
