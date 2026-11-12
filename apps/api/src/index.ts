@@ -191,6 +191,20 @@ app.post("/internal/processor/fail", async (c) => {
   return c.json({ ok: true, failed: job.status === "failed", cancelled: job.status === "cancelled" });
 });
 
+app.post("/internal/processor/complete", async (c) => {
+  const body = parseProcessorBody<{ jobId?: string; leaseId?: string; leaseToken?: string; title?: string }>(c);
+  if (!body?.jobId || !body.leaseId || !body.leaseToken ||
+      (body.title !== undefined && (typeof body.title !== "string" || body.title.trim().length > 200))) {
+    return jsonError(c, "Invalid completion payload.", 400);
+  }
+  const tokenHash = await sha256Hex(body.leaseToken);
+  const result = await c.env.DB.prepare(
+    "UPDATE jobs SET status = 'completed', stage = 'completed', progress = 100, title = COALESCE(?1, title), completed_at = CURRENT_TIMESTAMP, lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, error_code = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?2 AND lease_id = ?3 AND lease_token_hash = ?4 AND status = 'processing' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP",
+  ).bind(body.title?.trim() || null, body.jobId, body.leaseId, tokenHash).run();
+  if (!result.meta.changes) return jsonError(c, "Lease is invalid, expired, or cancellation was requested.", 409);
+  return c.json({ ok: true, completed: true });
+});
+
 app.use("/api/*", async (c, next) => {
   const domain = c.env.ACCESS_TEAM_DOMAIN.replace(/^https?:\/\//, "").replace(/\/$/, "");
   const audience = c.env.ACCESS_AUD;
