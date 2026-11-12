@@ -116,7 +116,7 @@ async def test_youtube_adapter_detects_live_and_upcoming_sources() -> None:
         def handler(_: httpx.Request, snippet: dict = snippet) -> httpx.Response:
             return httpx.Response(
                 200,
-                json={"items": [{"snippet": snippet, "contentDetails": {"duration": "PT2M"}, "liveStreamingDetails": {"actualStartTime": "2026-01-01T00:00:00Z"} if snippet["liveBroadcastContent"] == "none" else {}}]},
+                json={"items": [{"snippet": snippet, "contentDetails": {"duration": "PT2M"}, "liveStreamingDetails": {"actualStartTime": "2026-01-01T00:00:00Z", "actualEndTime": "2026-01-01T02:00:00Z"} if snippet["liveBroadcastContent"] == "none" else {}}]},
             )
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
