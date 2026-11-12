@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f2eaff"/>
+      <stop offset=".28" stop-color="#a78bfa"/>
+      <stop offset=".62" stop-color="#6d28d9"/>
+      <stop offset="1" stop-color="#c4b5fd"/>
+    </linearGradient>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#171022"/>
+      <stop offset="1" stop-color="#050308"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="10"/>
+    </filter>
+  </defs>
+  <rect x="20" y="20" width="472" height="472" rx="112" fill="url(#bg)" stroke="#5b3b91" stroke-opacity=".55" stroke-width="2"/>
+  <rect x="24" y="24" width="464" height="464" rx="108" fill="none" stroke="#fff" stroke-opacity=".08" stroke-width="2"/>
+  <path d="M350 145H225c-62 0-103 42-103 105v12c0 63 41 105 103 105h125" fill="none" stroke="#8b5cf6" stroke-opacity=".22" stroke-width="76" stroke-linecap="round" filter="url(#shadow)"/>
+  <path d="M350 145H225c-62 0-103 42-103 105v12c0 63 41 105 103 105h125" fill="none" stroke="url(#glass)" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M350 145H225c-62 0-103 42-103 105v12c0 63 41 105 103 105h125" fill="none" stroke="#fff" stroke-opacity=".42" stroke-width="2.5" stroke-linecap="round"/>
+  <g fill="#10091c" stroke="#d8c4ff" stroke-opacity=".55" stroke-width="2">
+    <rect x="145" y="192" width="34" height="34" rx="9"/>
+    <rect x="145" y="245" width="34" height="34" rx="9"/>
+    <rect x="145" y="298" width="34" height="34" rx="9"/>
+  </g>
+  <path d="M255 204c-9-5-20 1-20 12v92c0 11 11 17 20 12l75-46c9-6 9-18 0-24z" fill="url(#glass)" stroke="#f0e7ff" stroke-opacity=".7" stroke-width="3" stroke-linejoin="round"/>
+</svg>
