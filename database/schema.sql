@@ -68,3 +68,11 @@ CREATE INDEX IF NOT EXISTS idx_jobs_lease_expiry ON jobs(status, lease_expires_a
 CREATE INDEX IF NOT EXISTS idx_candidates_job ON candidates(job_id);
 CREATE INDEX IF NOT EXISTS idx_clips_user_created ON clips(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_clips_job ON clips(job_id);
+
+CREATE TABLE IF NOT EXISTS processor_request_nonces (
+  nonce_hash TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_processor_nonces_created
+  ON processor_request_nonces(created_at);
