@@ -19,12 +19,8 @@ migrations_dir = "../../database/migrations"
 binding = "MEDIA"
 bucket_name = "clipforge-private-media"
 
-[[queues.producers]]
-binding = "JOB_QUEUE"
-queue = "clipforge-jobs"
-
-# Add the Queue consumer binding only after the processor endpoint is deployed.
-# Until then, jobs are safely recorded and queued but are not processed.
+# Jobs are claimed directly from D1 by the authenticated Python processor.
+# Configure PROCESSOR_SHARED_SECRET with: wrangler secret put PROCESSOR_SHARED_SECRET
 
 [vars]
 ACCESS_TEAM_DOMAIN = "YOUR_TEAM.cloudflareaccess.com"
