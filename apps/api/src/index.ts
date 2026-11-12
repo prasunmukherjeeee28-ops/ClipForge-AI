@@ -214,7 +214,7 @@ app.use("/api/*", async (c, next) => {
         .first<{ id: string }>();
       if (!inserted) return jsonError(c, "Could not initialize account.", 500);
       userId = inserted.id;
-    } else if (existing.email !== email) {
+    } else if (existing && existing.email !== email) {
       await c.env.DB.prepare(
         "UPDATE users SET email = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
       )
