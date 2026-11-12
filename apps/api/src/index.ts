@@ -78,7 +78,7 @@ function sourcePlatform(value: string): "youtube" | "twitch" | null {
 }
 
 app.use("/internal/processor/*", async (c, next) => {
-  if (!c.env.PROCESSOR_SHARED_SECRET) return jsonError(c, "Processor authentication is not configured.", 503);
+  if (!c.env.PROCESSOR_SHARED_SECRET || c.env.PROCESSOR_SHARED_SECRET.length < 32) return jsonError(c, "Processor authentication is not configured.", 503);
   if (!(await verifyProcessorSignature(c))) return jsonError(c, "Invalid processor signature.", 401);
   await next();
 });
@@ -328,7 +328,7 @@ app.post("/api/jobs/cancel-all", async (c) => {
   )
     .bind(c.get("user").id)
     .run();
-  return c.json({ cancelledCount: result.meta.changes ?? 0 });
+  return c.json({ requestedCount: result.meta.changes ?? 0 });
 });
 
 app.get("/api/clips", async (c) => {
