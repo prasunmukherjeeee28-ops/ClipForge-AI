@@ -93,3 +93,12 @@ def test_cancelled_job_cannot_persist_source_metadata() -> None:
     db.execute("UPDATE jobs SET cancel_requested = 1 WHERE id = 'job-1'")
     result = db.execute(source_metadata_sql(), payload())
     assert result.rowcount == 0
+
+def test_source_metadata_platform_must_match_submitted_job() -> None:
+    db = make_db()
+    wrong_platform = payload()[:-1] + ("twitch",)
+    result = db.execute(source_metadata_sql(), wrong_platform)
+    assert result.rowcount == 0
+    row = db.execute("SELECT source_type, source_id FROM jobs WHERE id = 'job-1'").fetchone()
+    assert tuple(row) == ("unknown", None)
+
