@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import secrets
 import time
 from typing import Any
 
@@ -30,6 +31,7 @@ def signed_headers(
     return {
         "content-type": "application/json",
         "X-Processor-Timestamp": stamp,
+        "X-Processor-Nonce": request_nonce,
         "X-Processor-Signature": signature,
     }
 
