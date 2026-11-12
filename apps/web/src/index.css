@@ -1,0 +1,72 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply antialiased;
+  }
+  body {
+    @apply bg-ink-950 text-zinc-200 font-sans;
+    font-feature-settings: "ss01", "cv01";
+  }
+  ::selection {
+    @apply bg-violet-550/40 text-white;
+  }
+  *:focus-visible {
+    @apply outline-none ring-2 ring-violet-450/60 ring-offset-2 ring-offset-ink-950;
+  }
+}
+
+@layer components {
+  /* Liquid glass surface */
+  .glass {
+    @apply bg-white/[0.04] backdrop-blur-xl border border-white/[0.07];
+  }
+  .glass-strong {
+    @apply bg-white/[0.06] backdrop-blur-2xl border border-white/[0.09];
+  }
+  .glass-hover {
+    @apply transition-all duration-200 ease-smooth hover:bg-white/[0.07] hover:border-white/[0.12];
+  }
+
+  /* Hairline divider with a faint violet tint */
+  .hairline {
+    @apply border-white/[0.06];
+  }
+
+  /* Scrollbar */
+  .scroll-slim {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+  }
+  .scroll-slim::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scroll-slim::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 9999px;
+  }
+  .scroll-slim::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+/* Subtle ambient glow behind the app shell */
+.app-ambient {
+  background:
+    radial-gradient(1200px 500px at 80% -10%, rgba(124, 99, 238, 0.09), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgba(124, 99, 238, 0.05), transparent 60%),
+    #08080b;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
