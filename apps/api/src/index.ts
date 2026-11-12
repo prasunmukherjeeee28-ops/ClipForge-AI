@@ -162,6 +162,22 @@ app.post("/internal/processor/release", async (c) => {
   return c.json({ ok: true, released: true });
 });
 
+app.post("/internal/processor/fail", async (c) => {
+  const body = parseProcessorBody<{
+    jobId?: string; leaseId?: string; leaseToken?: string; errorCode?: string;
+  }>(c);
+  if (!body?.jobId || !body.leaseId || !body.leaseToken ||
+      typeof body.errorCode !== "string" || !/^[a-z0-9_]{1,60}$/.test(body.errorCode)) {
+    return jsonError(c, "Invalid failure payload.", 400);
+  }
+  const tokenHash = await sha256Hex(body.leaseToken);
+  const result = await c.env.DB.prepare(
+    "UPDATE jobs SET status = CASE WHEN cancel_requested = 1 THEN 'cancelled' ELSE 'failed' END, stage = CASE WHEN cancel_requested = 1 THEN 'cancelled' ELSE 'failed' END, error_code = CASE WHEN cancel_requested = 1 THEN error_code ELSE ?1 END, lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?2 AND lease_id = ?3 AND lease_token_hash = ?4 AND status = 'processing' AND lease_expires_at > CURRENT_TIMESTAMP",
+  ).bind(body.errorCode, body.jobId, body.leaseId, tokenHash).run();
+  if (!result.meta.changes) return jsonError(c, "Lease is no longer valid.", 409);
+  return c.json({ ok: true, failed: true });
+});
+
 app.use("/api/*", async (c, next) => {
   const domain = c.env.ACCESS_TEAM_DOMAIN.replace(/^https?:\/\//, "").replace(/\/$/, "");
   const audience = c.env.ACCESS_AUD;
