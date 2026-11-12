@@ -151,7 +151,7 @@ def add_user_and_job(
     )
 
 
-def test_atomic_claim_statement_never_returns_same_job_twice() -> None:
+def test_claim_update_returns_distinct_jobs_for_sequential_workers() -> None:
     db = make_db()
     db.execute("UPDATE jobs SET status = 'queued', lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL WHERE id = 'job-1'")
     add_user_and_job(db, "user-1", "job-2")
@@ -163,7 +163,12 @@ def test_atomic_claim_statement_never_returns_same_job_twice() -> None:
     assert first is not None
     assert second is not None
     assert first["id"] != second["id"]
-    assert {first["leaseId"] if "leaseId" in first.keys() else "job-1", second["id"]}  # both claims succeeded
+
+    active_claims = db.execute(
+        "SELECT id, lease_id FROM jobs WHERE status = 'processing'"
+    ).fetchall()
+    assert len(active_claims) == 2
+    assert len({row["lease_id"] for row in active_claims}) == 2
 
 
 def test_expired_jobs_recover_or_fail_at_attempt_limit() -> None:
