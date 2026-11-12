@@ -179,7 +179,7 @@ app.post("/internal/processor/source-metadata", async (c) => {
     (duration !== undefined && duration !== null &&
       (typeof duration !== "number" || !Number.isInteger(duration) || duration < 0 || duration > 604800)) ||
     (publishedAt !== undefined && publishedAt !== null &&
-      (typeof publishedAt !== "string" || publishedAt.length > 40 || !/^\\d{4}-\\d{2}-\\d{2}T/.test(publishedAt) || !Number.isFinite(Date.parse(publishedAt))))
+      (typeof publishedAt !== "string" || publishedAt.length > 40 || !/^\d{4}-\d{2}-\d{2}T/.test(publishedAt) || !Number.isFinite(Date.parse(publishedAt))))
   ) {
     return jsonError(c, "Invalid source metadata payload.", 400);
   }
