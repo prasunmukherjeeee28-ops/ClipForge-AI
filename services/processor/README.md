@@ -9,12 +9,13 @@ Initial connectivity scaffold for the D1-backed polling architecture. This is no
 - Claims one queued D1 job and receives a short-lived lease.
 - Sends a heartbeat and a test progress update.
 - Releases the job back to queued (or acknowledges cancellation) without fetching the source URL.
+- Exposes signed completion and terminal-failure callbacks for the real pipeline to use later.
 
 It intentionally does not download source media, run FFmpeg, transcribe audio, call an AI provider, or upload clips.
 
 ## Requirements
 - Python 3.11+
-- A deployed Worker with migration `0002_processor_leases.sql` applied.
+- A deployed Worker with migrations `0001_initial.sql` through `0003_processor_request_nonces.sql` applied.
 - Cloudflare Access configured for the two intended users.
 - Worker secret `PROCESSOR_SHARED_SECRET` set to a random value of at least 32 characters.
 - The same secret supplied to this process through its environment. Never put it in Git.
@@ -55,10 +56,13 @@ The client signs the exact bytes sent in the HTTP body. The canonical message is
 
 ```text
 unix_timestamp + newline
+lowercase_32_character_nonce + newline
 HTTP_METHOD + newline
 URL_PATHNAME + newline
 exact_raw_body
 ```
+
+Each request uses a fresh random nonce. The Worker stores only its SHA-256 hash and rejects replayed nonces.
 
 The Worker checks the timestamp (±300 seconds) and verifies the HMAC. Each claim also returns a per-job lease token. Only its SHA-256 hash is stored in D1. Never log or persist the raw lease token.
 
