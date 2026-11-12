@@ -99,13 +99,13 @@ app.post("/internal/processor/claim", async (c) => {
 
   // Recover abandoned leases before claiming new work.
   await c.env.DB.prepare(
-    "UPDATE jobs SET status = 'cancelled', stage = 'cancelled', lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'processing' AND cancel_requested = 1 AND lease_expires_at < CURRENT_TIMESTAMP",
+    "UPDATE jobs SET status = 'cancelled', stage = 'cancelled', lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'processing' AND cancel_requested = 1 AND lease_expires_at <= CURRENT_TIMESTAMP",
   ).run();
   await c.env.DB.prepare(
-    "UPDATE jobs SET status = 'failed', stage = 'failed', error_code = 'retries_exhausted', lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'processing' AND lease_expires_at < CURRENT_TIMESTAMP AND attempt_count >= max_attempts",
+    "UPDATE jobs SET status = 'failed', stage = 'failed', error_code = 'retries_exhausted', lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'processing' AND lease_expires_at <= CURRENT_TIMESTAMP AND attempt_count >= max_attempts",
   ).run();
   await c.env.DB.prepare(
-    "UPDATE jobs SET status = 'queued', stage = 'queued', error_code = 'lease_expired', lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'processing' AND lease_expires_at < CURRENT_TIMESTAMP AND attempt_count < max_attempts AND cancel_requested = 0",
+    "UPDATE jobs SET status = 'queued', stage = 'queued', error_code = 'lease_expired', lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'processing' AND lease_expires_at <= CURRENT_TIMESTAMP AND attempt_count < max_attempts AND cancel_requested = 0",
   ).run();
 
   const leaseId = uuid();
@@ -127,7 +127,7 @@ app.post("/internal/processor/heartbeat", async (c) => {
   if (!body?.jobId || !body.leaseId || !body.leaseToken) return jsonError(c, "Invalid heartbeat payload.", 400);
   const tokenHash = await sha256Hex(body.leaseToken);
   const job = await c.env.DB.prepare(
-    "UPDATE jobs SET lease_expires_at = datetime('now', '+90 seconds'), last_heartbeat_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'processing' RETURNING cancel_requested AS cancelRequested, lease_expires_at AS leaseExpiresAt",
+    "UPDATE jobs SET lease_expires_at = datetime('now', '+90 seconds'), last_heartbeat_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'processing' AND lease_expires_at > CURRENT_TIMESTAMP RETURNING cancel_requested AS cancelRequested, lease_expires_at AS leaseExpiresAt",
   ).bind(body.jobId, body.leaseId, tokenHash).first<{ cancelRequested: number; leaseExpiresAt: string }>();
   if (!job) return jsonError(c, "Lease is no longer valid.", 409);
   return c.json({ ok: true, cancelRequested: job.cancelRequested === 1, leaseExpiresAt: job.leaseExpiresAt });
@@ -145,7 +145,7 @@ app.post("/internal/processor/progress", async (c) => {
   }
   const tokenHash = await sha256Hex(body.leaseToken);
   const result = await c.env.DB.prepare(
-    "UPDATE jobs SET stage = ?1, progress = ?2, updated_at = CURRENT_TIMESTAMP WHERE id = ?3 AND lease_id = ?4 AND lease_token_hash = ?5 AND status = 'processing' AND cancel_requested = 0",
+    "UPDATE jobs SET stage = ?1, progress = ?2, updated_at = CURRENT_TIMESTAMP WHERE id = ?3 AND lease_id = ?4 AND lease_token_hash = ?5 AND status = 'processing' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP",
   ).bind(body.stage, progress, body.jobId, body.leaseId, tokenHash).run();
   if (!result.meta.changes) return jsonError(c, "Lease is invalid or cancellation was requested.", 409);
   return c.json({ ok: true });
