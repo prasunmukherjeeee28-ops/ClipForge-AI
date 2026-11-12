@@ -231,6 +231,13 @@ app.use("/api/*", async (c, next) => {
       return jsonError(c, "This account is not authorized to use ClipForge.", 403);
     }
 
+    const emailOwner = await c.env.DB.prepare(
+      "SELECT auth_subject AS authSubject FROM users WHERE email = ?1 LIMIT 1",
+    ).bind(email).first<{ authSubject: string }>();
+    if (emailOwner && emailOwner.authSubject !== subject) {
+      return jsonError(c, "This email is already linked to another ClipForge account.", 403);
+    }
+
     const existing = await c.env.DB.prepare(
       "SELECT id, email FROM users WHERE auth_subject = ?1 LIMIT 1",
     )
@@ -283,7 +290,7 @@ app.post("/api/jobs", async (c) => {
   }
 
   const urls = body.urls.map((value) => (typeof value === "string" ? value.trim() : ""));
-  if (urls.some((url) => !url) || new Set(urls).size !== urls.length) {
+  if (urls.some((url) => !url || url.length > 2048) || new Set(urls).size !== urls.length) {
     return jsonError(c, "Every URL must be a unique, non-empty string.", 400);
   }
 
@@ -305,24 +312,24 @@ app.post("/api/jobs", async (c) => {
 
   const user = c.get("user");
   const created: Array<{ id: string; status: "queued"; sourcePlatform: string }> = [];
-
-  for (const item of parsed) {
+  const inserts = parsed.map((item) => {
     const id = uuid();
     const platform = item.platform as "youtube" | "twitch";
-    await c.env.DB.prepare(
-      "INSERT INTO jobs (id, user_id, source_url, source_platform, options_json) VALUES (?1, ?2, ?3, ?4, ?5)",
-    )
-      .bind(id, user.id, item.url, platform, JSON.stringify(safeOptions))
-      .run();
     created.push({ id, status: "queued", sourcePlatform: platform });
-  }
+    return c.env.DB.prepare(
+      "INSERT INTO jobs (id, user_id, source_url, source_platform, options_json) VALUES (?1, ?2, ?3, ?4, ?5)",
+    ).bind(id, user.id, item.url, platform, JSON.stringify(safeOptions));
+  });
 
+  // D1 batch is transactional: a bulk submission is all-or-nothing.
+  await c.env.DB.batch(inserts);
   return c.json({ jobs: created }, 202);
 });
 
 app.get("/api/jobs", async (c) => {
   const user = c.get("user");
-  const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 50) || 50, 1), 100);
+  const requestedLimit = Number(c.req.query("limit") ?? 50);
+  const limit = Math.min(Math.max(Number.isFinite(requestedLimit) ? Math.trunc(requestedLimit) : 50, 1), 100);
   const result = await c.env.DB.prepare(
     "SELECT id, source_url AS sourceUrl, source_platform AS sourcePlatform, source_type AS sourceType, title, status, progress, stage, error_code AS errorCode, created_at AS createdAt, updated_at AS updatedAt FROM jobs WHERE user_id = ?1 ORDER BY created_at DESC LIMIT ?2",
   )
