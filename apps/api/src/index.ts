@@ -166,14 +166,19 @@ app.post("/internal/processor/progress", async (c) => {
 
 app.post("/internal/processor/source-metadata", async (c) => {
   const body = parseProcessorBody<{
-    jobId?: string; leaseId?: string; leaseToken?: string; sourceId?: string;
+    jobId?: string; leaseId?: string; leaseToken?: string; sourceId?: string; sourcePlatform?: string;
     sourceType?: string; title?: string; durationSeconds?: number | null; publishedAt?: string | null;
   }>(c);
   const duration = body?.durationSeconds;
   const publishedAt = body?.publishedAt;
+  const sourceIdValid = body?.sourcePlatform === "youtube"
+    ? typeof body.sourceId === "string" && /^[A-Za-z0-9_-]{11}$/.test(body.sourceId)
+    : body?.sourcePlatform === "twitch"
+      ? typeof body.sourceId === "string" && /^[0-9]{1,20}$/.test(body.sourceId)
+      : false;
   if (
     !body?.jobId || !body.leaseId || !body.leaseToken ||
-    typeof body.sourceId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(body.sourceId) ||
+    !sourceIdValid ||
     (body.sourceType !== "video" && body.sourceType !== "live") ||
     typeof body.title !== "string" || !body.title.trim() || body.title.trim().length > 200 ||
     (duration !== undefined && duration !== null &&
@@ -186,7 +191,7 @@ app.post("/internal/processor/source-metadata", async (c) => {
 
   const tokenHash = await sha256Hex(body.leaseToken);
   const result = await c.env.DB.prepare(
-    "UPDATE jobs SET source_type = ?1, source_id = ?2, title = ?3, source_duration_seconds = ?4, source_published_at = ?5, source_verified_at = CURRENT_TIMESTAMP, stage = 'source_metadata_verified', progress = MAX(progress, 5), updated_at = CURRENT_TIMESTAMP WHERE id = ?6 AND lease_id = ?7 AND lease_token_hash = ?8 AND status = 'processing' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP",
+    "UPDATE jobs SET source_type = ?1, source_id = ?2, title = ?3, source_duration_seconds = ?4, source_published_at = ?5, source_verified_at = CURRENT_TIMESTAMP, stage = 'source_metadata_verified', progress = MAX(progress, 5), updated_at = CURRENT_TIMESTAMP WHERE id = ?6 AND lease_id = ?7 AND lease_token_hash = ?8 AND status = 'processing' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP AND source_platform = ?9",
   ).bind(
     body.sourceType,
     body.sourceId,
@@ -196,6 +201,7 @@ app.post("/internal/processor/source-metadata", async (c) => {
     body.jobId,
     body.leaseId,
     tokenHash,
+    body.sourcePlatform,
   ).run();
   if (!result.meta.changes) return jsonError(c, "Lease is invalid, expired, or cancellation was requested.", 409);
   return c.json({ ok: true, sourceMetadataSaved: true });
