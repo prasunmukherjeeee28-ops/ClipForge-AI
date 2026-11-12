@@ -21,6 +21,7 @@ def make_db() -> sqlite3.Connection:
     db.row_factory = sqlite3.Row
     db.executescript((ROOT / "database/migrations/0001_initial.sql").read_text())
     db.executescript((ROOT / "database/migrations/0002_processor_leases.sql").read_text())
+    db.executescript((ROOT / "database/migrations/0003_processor_request_nonces.sql").read_text())
     db.execute(
         "INSERT INTO users (id, auth_subject, email) VALUES ('user-1', 'subject-1', 'one@example.com')"
     )
@@ -264,3 +265,18 @@ def test_failure_callback_acknowledges_cancellation_without_marking_failed() -> 
         "SELECT status, stage, error_code, lease_id FROM jobs WHERE id = 'job-1'"
     ).fetchone()
     assert tuple(row) == ("cancelled", "cancelled", None, None)
+
+
+
+def test_processor_request_nonce_is_single_use() -> None:
+    db = make_db()
+    first = db.execute(
+        "INSERT INTO processor_request_nonces (nonce_hash) VALUES (?) ON CONFLICT(nonce_hash) DO NOTHING",
+        ("nonce-hash",),
+    )
+    replay = db.execute(
+        "INSERT INTO processor_request_nonces (nonce_hash) VALUES (?) ON CONFLICT(nonce_hash) DO NOTHING",
+        ("nonce-hash",),
+    )
+    assert first.rowcount == 1
+    assert replay.rowcount == 0
