@@ -240,8 +240,9 @@ def test_failure_callback_requires_current_unexpired_lease() -> None:
 
     valid_result = db.execute(
         fail, ("source_unavailable", "job-1", "lease-old", "hash-old")
-    )
-    assert valid_result.rowcount == 1
+    ).fetchone()
+    assert valid_result is not None
+    assert valid_result["status"] == "failed"
     row = db.execute(
         "SELECT status, stage, error_code, lease_id, lease_token_hash FROM jobs WHERE id = 'job-1'"
     ).fetchone()
@@ -256,8 +257,9 @@ def test_failure_callback_acknowledges_cancellation_without_marking_failed() -> 
     result = db.execute(
         route_update_sql("fail"),
         ("processing_error", "job-1", "lease-old", "hash-old"),
-    )
-    assert result.rowcount == 1
+    ).fetchone()
+    assert result is not None
+    assert result["status"] == "cancelled"
     row = db.execute(
         "SELECT status, stage, error_code, lease_id FROM jobs WHERE id = 'job-1'"
     ).fetchone()
