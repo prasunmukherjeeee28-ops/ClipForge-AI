@@ -24,7 +24,7 @@ def signed_headers(
     if len(request_nonce) != 32 or any(char not in "0123456789abcdefABCDEF" for char in request_nonce):
         raise ValueError("nonce must be 32 hexadecimal characters")
     request_nonce = request_nonce.lower()
-    canonical = b"\\n".join(
+    canonical = b"\n".join(
         [
             stamp.encode("ascii"),
             request_nonce.encode("ascii"),
