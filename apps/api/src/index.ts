@@ -37,11 +37,11 @@ async function verifyProcessorSignature(c: AppContext): Promise<boolean> {
   const timestamp = c.req.header("X-Processor-Timestamp") ?? "";
   const nonce = c.req.header("X-Processor-Nonce") ?? "";
   const signature = hexToBytes(c.req.header("X-Processor-Signature") ?? "");
-  if (!secret || !/^\\d{10}$/.test(timestamp) || !/^[a-f0-9]{32}$/i.test(nonce) || !signature) return false;
+  if (!secret || !/^\d{10}$/.test(timestamp) || !/^[a-f0-9]{32}$/i.test(nonce) || !signature) return false;
   const seconds = Number(timestamp);
   if (!Number.isFinite(seconds) || Math.abs(Date.now() / 1000 - seconds) > 300) return false;
   const body = await c.req.text();
-  const canonical = [timestamp, nonce.toLowerCase(), c.req.method.toUpperCase(), new URL(c.req.url).pathname, body].join("\\n");
+  const canonical = [timestamp, nonce.toLowerCase(), c.req.method.toUpperCase(), new URL(c.req.url).pathname, body].join("\n");
   const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
   const valid = await crypto.subtle.verify("HMAC", key, signature, encoder.encode(canonical));
   if (!valid) return false;
