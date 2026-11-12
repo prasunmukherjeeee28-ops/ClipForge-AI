@@ -11,6 +11,9 @@ class Settings:
     shared_secret: str
     worker_id: str
     http_timeout_seconds: float = 20.0
+    youtube_data_api_key: str | None = None
+    twitch_client_id: str | None = None
+    twitch_client_secret: str | None = None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -35,4 +38,12 @@ class Settings:
         if timeout < 1 or timeout > 120:
             raise ValueError("PROCESSOR_HTTP_TIMEOUT_SECONDS must be between 1 and 120")
 
-        return cls(base_url, secret, worker_id, timeout)
+        return cls(
+            api_base_url=base_url,
+            shared_secret=secret,
+            worker_id=worker_id,
+            http_timeout_seconds=timeout,
+            youtube_data_api_key=os.environ.get("YOUTUBE_DATA_API_KEY") or None,
+            twitch_client_id=os.environ.get("TWITCH_CLIENT_ID") or None,
+            twitch_client_secret=os.environ.get("TWITCH_CLIENT_SECRET") or None,
+        )
