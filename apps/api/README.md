@@ -19,8 +19,10 @@ D1 is the single source of truth for dispatch. There is no Cloudflare Queue prod
 
 All `/internal/processor/*` routes require:
 - `X-Processor-Timestamp`: Unix seconds, within five minutes of Worker time.
+- `X-Processor-Nonce`: unique 32-character hexadecimal nonce per request.
 - `X-Processor-Signature`: lowercase/uppercase hex HMAC-SHA256 of the canonical bytes:
-  `timestamp + "\n" + HTTP method + "\n" + URL pathname + "\n" + exact raw request body`.
+  `timestamp + "\n" + lowercase_nonce + "\n" + HTTP method + "\n" + URL pathname + "\n" + exact raw request body`.
+- The Worker hashes and stores each nonce once, rejecting replayed signed requests.
 - HMAC key: the Worker secret `PROCESSOR_SHARED_SECRET`.
 
 Routes:
@@ -29,6 +31,8 @@ Routes:
 - `POST /internal/processor/heartbeat` — body `{"jobId":"...","leaseId":"...","leaseToken":"..."}`; extends the 90-second lease and returns `cancelRequested`.
 - `POST /internal/processor/progress` — same lease fields plus `stage` and integer `progress` (0–99).
 - `POST /internal/processor/release` — releases a claimed job back to queued for safe connection tests; if cancellation was requested, it becomes cancelled.
+- `POST /internal/processor/complete` — marks an active lease completed at 100% progress and clears the lease; rejects expired leases and cancellation requests.
+- `POST /internal/processor/fail` — records a sanitized terminal error code for the active lease, or acknowledges cancellation.
 
 The processor must keep the lease token private. D1 stores only its SHA-256 hash. A stale lease is recovered on the next claim request; attempts are bounded by `max_attempts` (default 3). The first Python milestone deliberately claims, heartbeats, reports a test stage and releases a job. It does not download or process source media.
 
