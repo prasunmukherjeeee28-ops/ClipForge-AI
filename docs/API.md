@@ -32,8 +32,10 @@ D1 is the sole job dispatch/state store. Python polls the Worker API; Cloudflare
 
 Every `POST /internal/processor/*` request must include:
 - `X-Processor-Timestamp`: Unix timestamp in seconds, accepted within ±300 seconds.
+- `X-Processor-Nonce`: 32 hexadecimal characters generated freshly for every request.
 - `X-Processor-Signature`: HMAC-SHA256 hex digest of UTF-8 canonical bytes:
-  `timestamp + "\n" + uppercase_method + "\n" + pathname + "\n" + exact_raw_body`.
+  `timestamp + "\n" + lowercase_nonce + "\n" + uppercase_method + "\n" + pathname + "\n" + exact_raw_body`.
+- The Worker stores only the SHA-256 hash of each nonce and rejects reuse. Nonces older than ten minutes are pruned.
 - HMAC key is the Worker secret `PROCESSOR_SHARED_SECRET`; never expose it to browser clients or commit it.
 
 Routes:
@@ -43,6 +45,7 @@ Routes:
 - `POST /internal/processor/progress` with lease fields plus `stage` and `progress` (integer 0–99): updates stage/progress only for the active lease and while cancellation is not requested.
 - `POST /internal/processor/release` with lease fields: safely releases a test claim back to queued, or marks it cancelled if cancellation was requested.
 - `POST /internal/processor/fail` with lease fields plus a lowercase `errorCode` (1–60 characters, letters/numbers/underscores): records a terminal processing failure, clears the lease, or marks the job cancelled if cancellation was requested. Expired or stale leases are rejected.
+- `POST /internal/processor/complete` with lease fields and optional `title` (up to 200 characters): marks an owned active job completed with progress 100 and clears its lease. It rejects stale/expired leases and jobs with cancellation requested. This callback records job completion only; media registration/download remains a later milestone.
 
 The Worker stores only SHA-256 of the lease token. A lease is valid only for its job and lease ID. Expired processing jobs are requeued until `max_attempts` is reached, then marked failed. Expired jobs with a cancellation request become cancelled. The initial Python client is a connectivity/claim smoke test and releases jobs; it does not process media.
 
@@ -54,7 +57,7 @@ R2 is bound privately but media upload/signing and clip download routes remain f
 
 ## Security rules
 - Resource IDs are not permissions; authorize every user-facing request by authenticated user ID.
-- Processor endpoints require timestamped HMAC authentication and a per-job lease token.
+- Processor endpoints require timestamped, one-time-nonce HMAC authentication and a per-job lease token.
 - Validate source URLs again in the processor, including redirect/DNS/IP checks, before any future network fetch.
 - Enforce source duration, file-size and scratch-space limits.
 - Make processor stages retry-safe/idempotent.
