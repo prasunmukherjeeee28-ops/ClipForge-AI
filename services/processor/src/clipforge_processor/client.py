@@ -131,6 +131,32 @@ class ProcessorClient:
             },
         )
 
+    async def report_source_metadata(
+        self,
+        job_id: str,
+        lease_id: str,
+        lease_token: str,
+        *,
+        source_id: str,
+        source_type: str,
+        title: str,
+        duration_seconds: int | None,
+        published_at: str | None,
+    ) -> dict[str, Any]:
+        return await self.post(
+            "/internal/processor/source-metadata",
+            {
+                "jobId": job_id,
+                "leaseId": lease_id,
+                "leaseToken": lease_token,
+                "sourceId": source_id,
+                "sourceType": source_type,
+                "title": title,
+                "durationSeconds": duration_seconds,
+                "publishedAt": published_at,
+            },
+        )
+
     async def release(self, job_id: str, lease_id: str, lease_token: str) -> dict[str, Any]:
         return await self.post(
             "/internal/processor/release",
