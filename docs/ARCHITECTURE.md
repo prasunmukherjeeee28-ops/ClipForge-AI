@@ -43,12 +43,13 @@ These are ordinary modules/functions inside one analysis service. Scores are est
 1. User submits a supported source URL or uploads authorized media.
 2. API validates the submitted URL host, creates a user-scoped queued job in D1.
 3. Python polls the internal API and atomically claims a job using a lease.
-4. Processor validates source authorization and network destinations before media acquisition.
-5. Processor probes and transcribes when possible, then proposes candidate moments.
-6. AI modules evaluate candidates and suggest boundaries/titles.
-7. FFmpeg cuts the selected moments and optionally adds captions or 9:16 framing.
-8. Export is stored in private R2; metadata/status are saved in D1 through authenticated callbacks.
-9. Web app provides authorized playback/download.
+4. Processor parses the platform video/VOD ID and retrieves metadata only from the official YouTube Data API or Twitch Helix API.
+5. Before media bytes are acquired, the user must provide a creator-authorized original/export or another provider-approved media asset. A platform page URL or public metadata response is not a download grant.
+6. The authorized media asset is validated, bounded and probed before transcription.
+7. AI modules evaluate candidates and suggest boundaries/titles.
+8. FFmpeg cuts the selected moments and optionally adds captions or 9:16 framing.
+9. Export is stored in private R2; metadata/status are saved in D1 through authenticated callbacks.
+10. Web app provides authorized playback/download.
 
 ## Cancellation and recovery
 - A queued job is marked cancelled immediately.
@@ -61,7 +62,7 @@ These are ordinary modules/functions inside one analysis service. Scores are est
 - Every user-facing resource query is scoped to the authenticated user ID.
 - Processor endpoints require timestamped HMAC-SHA256 authentication with a one-time nonce, plus a job-scoped lease token.
 - Keep provider keys and processor shared secrets server-side in secrets.
-- Validate source URLs again in the processor, including redirects, DNS answers and private/reserved IP destinations, before any future network fetch.
+- The current metadata adapters never fetch user-submitted platform URLs; they call fixed official API hosts. Any future media-file URL fetch must independently validate every redirect and DNS answer, pin the resolved public IP to the connection, and reject private/reserved/link-local/cloud-metadata destinations.
 - Bound source duration, file size, scratch usage and processing time.
 - Keep R2 objects private and use short-lived authorized download URLs.
 - Use only media you own or have permission to process; do not bypass platform access controls.
