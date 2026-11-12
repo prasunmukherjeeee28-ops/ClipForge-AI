@@ -16,12 +16,18 @@ def signed_headers(
     path: str,
     body: bytes,
     timestamp: int | None = None,
+    nonce: str | None = None,
 ) -> dict[str, str]:
-    """Sign the exact bytes sent to the Worker API."""
+    """Sign the exact bytes sent to the Worker API with a one-time nonce."""
     stamp = str(timestamp if timestamp is not None else int(time.time()))
-    canonical = b"\n".join(
+    request_nonce = nonce or secrets.token_hex(16)
+    if len(request_nonce) != 32 or any(char not in "0123456789abcdefABCDEF" for char in request_nonce):
+        raise ValueError("nonce must be 32 hexadecimal characters")
+    request_nonce = request_nonce.lower()
+    canonical = b"\\n".join(
         [
             stamp.encode("ascii"),
+            request_nonce.encode("ascii"),
             method.upper().encode("ascii"),
             path.encode("utf-8"),
             body,
