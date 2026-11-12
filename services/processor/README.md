@@ -1,17 +1,17 @@
 # ClipForge Python Processor
 
-Initial connectivity scaffold for the D1-backed polling architecture. This is not yet a video processor.
+D1-backed single-job processor with official YouTube/Twitch VOD metadata inspection. This is the first source-ingestion layer, not yet a clip generator.
 
 ## What it does now
-- Signs machine requests with HMAC-SHA256.
-- Checks the public Worker health endpoint.
-- Authenticates against the internal processor ping endpoint.
-- Claims one queued D1 job and receives a short-lived lease.
-- Sends a heartbeat and a test progress update.
-- Releases the job back to queued (or acknowledges cancellation) without fetching the source URL.
-- Exposes signed completion and terminal-failure callbacks for the real pipeline to use later.
+- Signs machine requests with HMAC-SHA256 and one-time nonces.
+- Claims one queued D1 job with a short-lived lease.
+- Parses one specific YouTube video or Twitch VOD URL without fetching the submitted page.
+- Inspects metadata through the official YouTube Data API or Twitch Helix API.
+- Detects normal VODs, completed livestream archives, active livestreams and upcoming livestreams.
+- Persists verified source ID, title, duration and publication timestamp through a lease-protected Worker callback.
+- Stops safely when the source is live or when no creator-authorized media asset is available.
 
-It intentionally does not download source media, run FFmpeg, transcribe audio, call an AI provider, or upload clips.
+It does not scrape platform pages, extract undocumented playback URLs, bypass access controls, or download media bytes. Official platform metadata is not a grant to download the video. FFmpeg, transcription, AI moment detection and R2 upload are later pipeline stages.
 
 ## Requirements
 - Python 3.11+
@@ -19,6 +19,8 @@ It intentionally does not download source media, run FFmpeg, transcribe audio, c
 - Cloudflare Access configured for the two intended users.
 - Worker secret `PROCESSOR_SHARED_SECRET` set to a random value of at least 32 characters.
 - The same secret supplied to this process through its environment. Never put it in Git.
+- `YOUTUBE_DATA_API_KEY` for YouTube metadata inspection.
+- `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` for Twitch Helix app-token metadata inspection. These remain server-side environment secrets.
 
 ## Local setup
 From this directory:
@@ -37,13 +39,21 @@ Run the authenticated health check:
 python -m clipforge_processor.health_check
 ```
 
-Run one safe mock claim/heartbeat/release cycle:
+Inspect a single URL without claiming a job:
+
+```bash
+YOUTUBE_DATA_API_KEY=... python -m clipforge_processor.source_probe 'https://youtu.be/VIDEO_ID'
+```
+
+For Twitch, set `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` instead.
+
+Run one processor cycle:
 
 ```bash
 python -m clipforge_processor.worker
 ```
 
-The mock worker releases the claimed job so it remains queued. Do not run multiple copies of this smoke-test worker simultaneously.
+The worker claims one job, fetches metadata from the relevant official API, saves it to D1 and then records an explicit stop reason. A VOD currently ends with `authorized_media_asset_required`; a live/upcoming source ends with `live_source_not_supported`. This is deliberate until an owner-authorized media-file ingestion path is implemented. Do not run multiple copies of this one-job worker simultaneously.
 
 Run unit tests:
 
