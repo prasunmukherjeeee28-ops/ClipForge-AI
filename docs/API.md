@@ -18,13 +18,13 @@ Authenticated JSON API behind Cloudflare Access. Every user-facing resource quer
 ## User jobs
 - `POST /api/jobs` — create 1–20 jobs in one request:
   `{ "urls": ["https://..."], "options": { "captions": true, "vertical": true, "reviewScores": true, "instruction": "..." } }`
-- `GET /api/jobs` — list the current user's jobs.
-- `GET /api/jobs/:jobId` — status/progress for an owned job.
+- `GET /api/jobs` — list the current user's jobs, including verified source metadata when available.
+- `GET /api/jobs/:jobId` — status/progress and verified source metadata for an owned job.
 - `POST /api/jobs/:jobId/cancel` — cancel one owned queued job or request cancellation of a processing job.
 - `POST /api/jobs/cancel-all` — request cancellation of all active jobs for the current user.
 - `GET /api/clips` — list the current user's clip metadata.
 
-Only HTTPS YouTube and Twitch URL hostnames are accepted at submission time. This is hostname validation only: it does not download the URL, establish media access, or replace SSRF-safe validation in a future source adapter. The source type remains `unknown` until an authorized source adapter detects live versus VOD.
+Only supported HTTPS YouTube and Twitch URL hostnames are accepted at submission time. The processor then parses one specific video/VOD ID and calls only fixed official metadata API endpoints: YouTube Data API `videos.list`, or Twitch Helix `videos` using a server-side app access token. It does not fetch the submitted platform page or retrieve a media playback URL. Source fields (`sourceId`, `sourceType`, title, duration, publication time and verification time) are saved using the lease-protected source metadata callback. Public metadata does not establish ownership or grant a downloadable media asset. Until creator-authorized media-file ingestion is added, a VOD job stops with `authorized_media_asset_required`; active/upcoming live sources stop with `live_source_not_supported`.
 
 ## Processor machine API
 
@@ -43,6 +43,7 @@ Routes:
 - `POST /internal/processor/claim` with `{"workerId":"processor-1"}`: recover expired leases, then atomically claim the oldest queued job. Returns null if idle; otherwise returns the job and a one-time lease token.
 - `POST /internal/processor/heartbeat` with `{"jobId":"...","leaseId":"...","leaseToken":"..."}`: extends the 90-second lease and returns whether cancellation was requested.
 - `POST /internal/processor/progress` with lease fields plus `stage` and `progress` (integer 0–99): updates stage/progress only for the active lease and while cancellation is not requested.
+- `POST /internal/processor/source-metadata` with lease fields plus `sourceId`, `sourceType` (`video` or `live`), `title`, optional `durationSeconds` (0–604800) and optional ISO `publishedAt`: persists verified metadata only for the active unexpired lease. It cannot change another user's job or a cancellation-requested job.
 - `POST /internal/processor/release` with lease fields: safely releases a test claim back to queued, or marks it cancelled if cancellation was requested.
 - `POST /internal/processor/fail` with lease fields plus a lowercase `errorCode` (1–60 characters, letters/numbers/underscores): records a terminal processing failure, clears the lease, or marks the job cancelled if cancellation was requested. Expired or stale leases are rejected.
 - `POST /internal/processor/complete` with lease fields and optional `title` (up to 200 characters): marks an owned active job completed with progress 100 and clears its lease. It rejects stale/expired leases and jobs with cancellation requested. This callback records job completion only; media registration/download remains a later milestone.
