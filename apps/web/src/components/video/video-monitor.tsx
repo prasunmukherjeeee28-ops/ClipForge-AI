@@ -3,19 +3,16 @@ import { cn, formatDuration } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
 /**
- * A polished "monitor" chrome around a procedural preview. Video
- * playback itself is intentionally not simulated — see Limitations in
- * the handoff notes. Controls toggle local play state for the UI.
+ * Player chrome around a solid-black media area. Real playback and frame
+ * previews will be connected when authenticated media URLs are available.
  */
 export function VideoMonitor({
-  hue,
   playing,
   onTogglePlay,
   currentSec,
   totalSec,
   vertical,
   onSeek,
-  subtitle,
   className,
 }: {
   hue: number;
@@ -42,46 +39,12 @@ export function VideoMonitor({
       </div>
 
       <div
+        aria-label="Video preview unavailable"
         className={cn(
-          "relative mx-auto my-5 overflow-hidden rounded-lg",
+          "relative mx-auto my-5 overflow-hidden rounded-lg bg-black",
           vertical ? "aspect-[9/16] h-[380px] max-w-full" : "aspect-video w-[calc(100%-2rem)]"
         )}
-      >
-        <div
-          className="absolute inset-0"
-          style={{
-            background: `
-              radial-gradient(120% 90% at 30% 20%, hsla(${hue}, 70%, 30%, 0.5), transparent 60%),
-              linear-gradient(160deg, hsl(${hue}, 25%, 11%), hsl(${(hue + 20) % 360}, 30%, 6%))
-            `,
-          }}
-        />
-        {subtitle ? (
-          <div className="absolute inset-x-4 bottom-8 flex justify-center">
-            <p className="rounded-md bg-black/60 px-3 py-1.5 text-center text-[13px] font-medium text-white shadow">
-              {subtitle}
-            </p>
-          </div>
-        ) : null}
-        <button
-          onClick={onTogglePlay}
-          aria-label={playing ? "Pause preview" : "Play preview"}
-          className="absolute inset-0 flex items-center justify-center"
-        >
-          <span
-            className={cn(
-              "glass-strong flex h-14 w-14 items-center justify-center rounded-full transition-all duration-200",
-              playing ? "opacity-0 scale-90 hover:opacity-100" : "opacity-100"
-            )}
-          >
-            {playing ? (
-              <Pause className="h-5 w-5 fill-white text-white" />
-            ) : (
-              <Play className="h-5 w-5 translate-x-0.5 fill-white text-white" />
-            )}
-          </span>
-        </button>
-      </div>
+      />
 
       <div className="border-t hairline px-4 py-3">
         <input
