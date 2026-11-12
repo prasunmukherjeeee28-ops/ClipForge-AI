@@ -98,6 +98,22 @@ class ProcessorClient:
             },
         )
 
+    async def complete(
+        self,
+        job_id: str,
+        lease_id: str,
+        lease_token: str,
+        title: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "jobId": job_id,
+            "leaseId": lease_id,
+            "leaseToken": lease_token,
+        }
+        if title is not None:
+            payload["title"] = title
+        return await self.post("/internal/processor/complete", payload)
+
     async def fail(
         self,
         job_id: str,
