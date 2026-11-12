@@ -280,3 +280,46 @@ def test_processor_request_nonce_is_single_use() -> None:
     )
     assert first.rowcount == 1
     assert replay.rowcount == 0
+
+
+
+def test_completion_callback_requires_current_unexpired_lease() -> None:
+    db = make_db()
+    complete = route_update_sql("complete")
+
+    # Expired lease cannot complete the job.
+    expired = db.execute(
+        complete, ("Final stream title", "job-1", "lease-old", "hash-old")
+    )
+    assert expired.rowcount == 0
+
+    db.execute(
+        "UPDATE jobs SET lease_expires_at = datetime('now', '+90 seconds') WHERE id = 'job-1'"
+    )
+    completed = db.execute(
+        complete, ("Final stream title", "job-1", "lease-old", "hash-old")
+    )
+    assert completed.rowcount == 1
+    row = db.execute(
+        "SELECT status, stage, progress, title, lease_id, lease_token_hash, completed_at FROM jobs WHERE id = 'job-1'"
+    ).fetchone()
+    assert tuple(row) == (
+        "completed", "completed", 100, "Final stream title", None, None, row["completed_at"]
+    )
+    assert row["completed_at"] is not None
+
+
+def test_completion_callback_cannot_override_cancellation() -> None:
+    db = make_db()
+    db.execute(
+        "UPDATE jobs SET lease_expires_at = datetime('now', '+90 seconds'), cancel_requested = 1 WHERE id = 'job-1'"
+    )
+    result = db.execute(
+        route_update_sql("complete"),
+        ("Should not finish", "job-1", "lease-old", "hash-old"),
+    )
+    assert result.rowcount == 0
+    row = db.execute(
+        "SELECT status, cancel_requested FROM jobs WHERE id = 'job-1'"
+    ).fetchone()
+    assert tuple(row) == ("processing", 1)
