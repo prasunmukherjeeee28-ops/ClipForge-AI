@@ -329,16 +329,7 @@ def test_completion_callback_cannot_override_cancellation() -> None:
 def test_job_detail_query_hides_another_users_job() -> None:
     db = make_db()
     add_user_and_job(db, "user-2", "friend-job")
-    detail_sql = api_sql_containing(
-        "SELECT id, source_url AS sourceUrl",
-    )
-    # Use the exact detail query rather than the list query.
-    detail_sql = next(
-        line.strip().strip('"').rstrip('",')
-        for line in API_SOURCE.splitlines()
-        if "SELECT id, source_url AS sourceUrl" in line
-        and "WHERE id = ?1 AND user_id = ?2" in line
-    )
+    detail_sql = api_sql_containing("WHERE id = ?1 AND user_id = ?2")
     row = db.execute(detail_sql, ("friend-job", "user-1")).fetchone()
     assert row is None
 
