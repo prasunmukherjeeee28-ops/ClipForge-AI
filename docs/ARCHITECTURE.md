@@ -59,7 +59,7 @@ These are ordinary modules/functions inside one analysis service. Scores are est
 
 ## Security
 - Every user-facing resource query is scoped to the authenticated user ID.
-- Processor endpoints require timestamped HMAC-SHA256 authentication and a job-scoped lease token.
+- Processor endpoints require timestamped HMAC-SHA256 authentication with a one-time nonce, plus a job-scoped lease token.
 - Keep provider keys and processor shared secrets server-side in secrets.
 - Validate source URLs again in the processor, including redirects, DNS answers and private/reserved IP destinations, before any future network fetch.
 - Bound source duration, file size, scratch usage and processing time.
