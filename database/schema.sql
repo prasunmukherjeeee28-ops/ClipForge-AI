@@ -25,7 +25,14 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   started_at TEXT,
-  completed_at TEXT
+  completed_at TEXT,
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+  max_attempts INTEGER NOT NULL DEFAULT 3 CHECK(max_attempts >= 1),
+  lease_id TEXT,
+  lease_token_hash TEXT,
+  lease_expires_at TEXT,
+  last_heartbeat_at TEXT,
+  cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK(cancel_requested IN (0,1))
 );
 
 CREATE TABLE IF NOT EXISTS candidates (
@@ -56,6 +63,8 @@ CREATE TABLE IF NOT EXISTS clips (
 
 CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_user_status ON jobs(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_jobs_dispatch ON jobs(status, cancel_requested, created_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_lease_expiry ON jobs(status, lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_candidates_job ON candidates(job_id);
 CREATE INDEX IF NOT EXISTS idx_clips_user_created ON clips(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_clips_job ON clips(job_id);
