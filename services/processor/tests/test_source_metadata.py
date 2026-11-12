@@ -48,7 +48,7 @@ def payload(
     # Exact bind order in the production SQL after lease-token hashing.
     return (
         source_type, source_id, title, duration, published_at,
-        job_id, lease_id, token_hash,
+        job_id, lease_id, token_hash, "youtube",
     )
 
 
