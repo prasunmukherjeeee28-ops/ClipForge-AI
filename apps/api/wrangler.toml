@@ -1,3 +1,32 @@
-# Add the Queue consumer binding only after the processor endpoint is deployed.
-# The producer is ready; queued work remains queued until a consumer is configured.
+name = "clipforge-api"
+main = "src/index.ts"
+compatibility_date = "2026-11-12"
+workers_dev = true
 
+[observability]
+enabled = true
+
+[observability.traces]
+enabled = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "clipforge-db"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "../../database/migrations"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "clipforge-private-media"
+
+[[queues.producers]]
+binding = "JOB_QUEUE"
+queue = "clipforge-jobs"
+
+# Add the Queue consumer binding only after the processor endpoint is deployed.
+# Until then, jobs are safely recorded and queued but are not processed.
+
+[vars]
+ACCESS_TEAM_DOMAIN = "YOUR_TEAM.cloudflareaccess.com"
+ACCESS_AUD = "SET_CLOUDFLARE_ACCESS_APPLICATION_AUD"
+ALLOWED_EMAILS = "first-user@example.com,second-user@example.com"
