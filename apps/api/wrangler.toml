@@ -1,0 +1,28 @@
+name = "clipforge-api"
+main = "src/index.ts"
+compatibility_date = "2026-11-12"
+workers_dev = true
+
+[observability]
+enabled = true
+
+[observability.traces]
+enabled = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "clipforge-db"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "../../database/migrations"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "clipforge-private-media"
+
+# Jobs are claimed directly from D1 by the authenticated Python processor.
+# Configure PROCESSOR_SHARED_SECRET with: wrangler secret put PROCESSOR_SHARED_SECRET
+
+[vars]
+ACCESS_TEAM_DOMAIN = "YOUR_TEAM.cloudflareaccess.com"
+ACCESS_AUD = "SET_CLOUDFLARE_ACCESS_APPLICATION_AUD"
+ALLOWED_EMAILS = "first-user@example.com,second-user@example.com"
