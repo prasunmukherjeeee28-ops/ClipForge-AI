@@ -51,7 +51,7 @@ function parseProcessorBody<T>(c: AppContext): T | null {
   try { return JSON.parse(c.get("processorBody")) as T; } catch { return null; }
 }
 
-function jsonError(c: AppContext, message: string, status: 400 | 401 | 403 | 404 | 500 | 503) {
+function jsonError(c: AppContext, message: string, status: 400 | 401 | 403 | 404 | 409 | 500 | 503) {
   return c.json({ error: { message } }, status);
 }
 
@@ -137,15 +137,16 @@ app.post("/internal/processor/progress", async (c) => {
   const body = parseProcessorBody<{
     jobId?: string; leaseId?: string; leaseToken?: string; stage?: string; progress?: number;
   }>(c);
+  const progress = body?.progress;
   if (!body?.jobId || !body.leaseId || !body.leaseToken || typeof body.stage !== "string" ||
-      body.stage.length < 1 || body.stage.length > 60 || !Number.isInteger(body.progress) ||
-      (body.progress ?? -1) < 0 || (body.progress ?? 101) > 99) {
+      body.stage.length < 1 || body.stage.length > 60 || typeof progress !== "number" ||
+      !Number.isInteger(progress) || progress < 0 || progress > 99) {
     return jsonError(c, "Invalid progress payload.", 400);
   }
   const tokenHash = await sha256Hex(body.leaseToken);
   const result = await c.env.DB.prepare(
     "UPDATE jobs SET stage = ?1, progress = ?2, updated_at = CURRENT_TIMESTAMP WHERE id = ?3 AND lease_id = ?4 AND lease_token_hash = ?5 AND status = 'processing' AND cancel_requested = 0",
-  ).bind(body.stage, body.progress, body.jobId, body.leaseId, tokenHash).run();
+  ).bind(body.stage, progress, body.jobId, body.leaseId, tokenHash).run();
   if (!result.meta.changes) return jsonError(c, "Lease is invalid or cancellation was requested.", 409);
   return c.json({ ok: true });
 });
