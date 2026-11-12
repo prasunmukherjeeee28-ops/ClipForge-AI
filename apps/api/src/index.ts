@@ -127,7 +127,7 @@ app.post("/internal/processor/heartbeat", async (c) => {
   if (!body?.jobId || !body.leaseId || !body.leaseToken) return jsonError(c, "Invalid heartbeat payload.", 400);
   const tokenHash = await sha256Hex(body.leaseToken);
   const job = await c.env.DB.prepare(
-    "UPDATE jobs SET lease_expires_at = datetime('now', '+90 seconds'), last_heartbeat_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'processing' AND lease_expires_at > CURRENT_TIMESTAMP AND lease_expires_at > CURRENT_TIMESTAMP RETURNING cancel_requested AS cancelRequested, lease_expires_at AS leaseExpiresAt",
+    "UPDATE jobs SET lease_expires_at = datetime('now', '+90 seconds'), last_heartbeat_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'processing' AND lease_expires_at > CURRENT_TIMESTAMP RETURNING cancel_requested AS cancelRequested, lease_expires_at AS leaseExpiresAt",
   ).bind(body.jobId, body.leaseId, tokenHash).first<{ cancelRequested: number; leaseExpiresAt: string }>();
   if (!job) return jsonError(c, "Lease is no longer valid.", 409);
   return c.json({ ok: true, cancelRequested: job.cancelRequested === 1, leaseExpiresAt: job.leaseExpiresAt });
@@ -156,7 +156,7 @@ app.post("/internal/processor/release", async (c) => {
   if (!body?.jobId || !body.leaseId || !body.leaseToken) return jsonError(c, "Invalid release payload.", 400);
   const tokenHash = await sha256Hex(body.leaseToken);
   const result = await c.env.DB.prepare(
-    "UPDATE jobs SET status = CASE WHEN cancel_requested = 1 THEN 'cancelled' ELSE 'queued' END, stage = CASE WHEN cancel_requested = 1 THEN 'cancelled' ELSE 'queued' END, progress = CASE WHEN cancel_requested = 1 THEN progress ELSE 0 END, attempt_count = CASE WHEN cancel_requested = 1 THEN attempt_count ELSE MAX(0, attempt_count - 1) END, lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, error_code = CASE WHEN cancel_requested = 1 THEN error_code ELSE NULL END, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'processing'",
+    "UPDATE jobs SET status = CASE WHEN cancel_requested = 1 THEN 'cancelled' ELSE 'queued' END, stage = CASE WHEN cancel_requested = 1 THEN 'cancelled' ELSE 'queued' END, progress = CASE WHEN cancel_requested = 1 THEN progress ELSE 0 END, attempt_count = CASE WHEN cancel_requested = 1 THEN attempt_count ELSE MAX(0, attempt_count - 1) END, lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, error_code = CASE WHEN cancel_requested = 1 THEN error_code ELSE NULL END, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'processing' AND lease_expires_at > CURRENT_TIMESTAMP",
   ).bind(body.jobId, body.leaseId, tokenHash).run();
   if (!result.meta.changes) return jsonError(c, "Lease is no longer valid.", 409);
   return c.json({ ok: true, released: true });
