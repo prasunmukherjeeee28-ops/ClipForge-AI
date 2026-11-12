@@ -1,8 +1,8 @@
 # ClipForge API
 
-Authenticated JSON API behind Cloudflare Access. Every resource query must be scoped to the verified user identity.
+Authenticated JSON API behind Cloudflare Access. Every user-facing resource query is scoped to the verified user identity. Processor routes use a separate HMAC-authenticated machine identity.
 
-## Authentication and access
+## User authentication and access
 - Cloudflare Access protects the application/API and validates the user's session.
 - The Worker independently verifies the `Cf-Access-Jwt-Assertion` signature, issuer and audience.
 - An explicit `ALLOWED_EMAILS` allowlist limits access to the two intended accounts.
@@ -15,29 +15,48 @@ Authenticated JSON API behind Cloudflare Access. Every resource query must be sc
 ## Identity
 - `GET /api/me` — authenticated user identity.
 
-## Jobs
+## User jobs
 - `POST /api/jobs` — create 1–20 jobs in one request:
   `{ "urls": ["https://..."], "options": { "captions": true, "vertical": true, "reviewScores": true, "instruction": "..." } }`
 - `GET /api/jobs` — list the current user's jobs.
 - `GET /api/jobs/:jobId` — status/progress for an owned job.
-- `POST /api/jobs/:jobId/cancel` — cancel one owned queued/processing job.
-- `POST /api/jobs/cancel-all` — cancel all active jobs for the current user.
-
-Only HTTPS YouTube and Twitch URL hostnames are accepted. This validation does not download the URL or establish media access. The source type remains `unknown` until an authorized source adapter detects live versus VOD.
-
-## Clips
+- `POST /api/jobs/:jobId/cancel` — cancel one owned queued job or request cancellation of a processing job.
+- `POST /api/jobs/cancel-all` — request cancellation of all active jobs for the current user.
 - `GET /api/clips` — list the current user's clip metadata.
 
+Only HTTPS YouTube and Twitch URL hostnames are accepted at submission time. This is hostname validation only: it does not download the URL, establish media access, or replace SSRF-safe validation in a future source adapter. The source type remains `unknown` until an authorized source adapter detects live versus VOD.
+
+## Processor machine API
+
+D1 is the sole job dispatch/state store. Python polls the Worker API; Cloudflare Queues are not used in this architecture.
+
+Every `POST /internal/processor/*` request must include:
+- `X-Processor-Timestamp`: Unix timestamp in seconds, accepted within ±300 seconds.
+- `X-Processor-Signature`: HMAC-SHA256 hex digest of UTF-8 canonical bytes:
+  `timestamp + "\n" + uppercase_method + "\n" + pathname + "\n" + exact_raw_body`.
+- HMAC key is the Worker secret `PROCESSOR_SHARED_SECRET`; never expose it to browser clients or commit it.
+
+Routes:
+- `POST /internal/processor/ping` with `{}`: authenticated connectivity check.
+- `POST /internal/processor/claim` with `{"workerId":"processor-1"}`: recover expired leases, then atomically claim the oldest queued job. Returns null if idle; otherwise returns the job and a one-time lease token.
+- `POST /internal/processor/heartbeat` with `{"jobId":"...","leaseId":"...","leaseToken":"..."}`: extends the 90-second lease and returns whether cancellation was requested.
+- `POST /internal/processor/progress` with lease fields plus `stage` and `progress` (integer 0–99): updates stage/progress only for the active lease and while cancellation is not requested.
+- `POST /internal/processor/release` with lease fields: safely releases a test claim back to queued, or marks it cancelled if cancellation was requested.
+
+The Worker stores only SHA-256 of the lease token. A lease is valid only for its job and lease ID. Expired processing jobs are requeued until `max_attempts` is reached, then marked failed. Expired jobs with a cancellation request become cancelled. The initial Python client is a connectivity/claim smoke test and releases jobs; it does not process media.
+
 ## Job states
-`queued` → `processing` → `review` → `completed`; failures and cancellation transition to `failed` or `cancelled`.
+`queued` → `processing` → `review` → `completed`; failures and cancellation transition to `failed` or `cancelled`. A processing job can expose stage `cancellation_requested` until the worker acknowledges cancellation or its lease expires.
 
 ## Infrastructure status
-The API currently creates D1 job records and publishes queue messages. The queue producer is configured; do not attach a consumer until the separate processor service is deployed and authenticated. R2 is bound privately but media upload/signing and clip download routes are a subsequent implementation step.
+R2 is bound privately but media upload/signing and clip download routes remain future work. No Cloudflare resources are created or deployed by the code changes.
 
 ## Security rules
-- Resource IDs are not permissions; authorize every request by authenticated user ID.
-- Validate source URLs and enforce batch limits.
-- Make processor operations retry-safe/idempotent.
+- Resource IDs are not permissions; authorize every user-facing request by authenticated user ID.
+- Processor endpoints require timestamped HMAC authentication and a per-job lease token.
+- Validate source URLs again in the processor, including redirect/DNS/IP checks, before any future network fetch.
+- Enforce source duration, file-size and scratch-space limits.
+- Make processor stages retry-safe/idempotent.
 - Keep provider keys and processor shared secrets server-side.
 - Never expose raw provider errors.
 - Use private R2 objects and short-lived authorized download URLs.
