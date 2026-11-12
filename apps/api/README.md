@@ -9,7 +9,7 @@ Cloudflare Worker API for the private two-account ClipForge workspace.
 - User-scoped URL job creation, listing, status and cancellation.
 - Bulk URL submission (up to 20 unique YouTube/Twitch URLs per request).
 - D1-backed processor job claiming with expiring leases and attempt limits.
-- HMAC-authenticated processor ping, claim, heartbeat, progress and release endpoints.
+- HMAC-authenticated, replay-protected processor ping, claim, heartbeat, progress, release and failure endpoints.
 - Cancellation requests remain visible to an active processor through heartbeat responses.
 - Private R2 binding reserved for subsequent media upload/export routes.
 
