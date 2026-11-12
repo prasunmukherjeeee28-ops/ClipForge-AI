@@ -90,6 +90,23 @@ class ProcessorClient:
             },
         )
 
+    async def fail(
+        self,
+        job_id: str,
+        lease_id: str,
+        lease_token: str,
+        error_code: str,
+    ) -> dict[str, Any]:
+        return await self.post(
+            "/internal/processor/fail",
+            {
+                "jobId": job_id,
+                "leaseId": lease_id,
+                "leaseToken": lease_token,
+                "errorCode": error_code,
+            },
+        )
+
     async def release(self, job_id: str, lease_id: str, lease_token: str) -> dict[str, Any]:
         return await self.post(
             "/internal/processor/release",
