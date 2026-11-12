@@ -303,8 +303,8 @@ def test_completion_callback_requires_current_unexpired_lease() -> None:
     row = db.execute(
         "SELECT status, stage, progress, title, lease_id, lease_token_hash, completed_at FROM jobs WHERE id = 'job-1'"
     ).fetchone()
-    assert tuple(row) == (
-        "completed", "completed", 100, "Final stream title", None, None, row["completed_at"]
+    assert tuple(row[:6]) == (
+        "completed", "completed", 100, "Final stream title", None, None
     )
     assert row["completed_at"] is not None
 
@@ -323,3 +323,54 @@ def test_completion_callback_cannot_override_cancellation() -> None:
         "SELECT status, cancel_requested FROM jobs WHERE id = 'job-1'"
     ).fetchone()
     assert tuple(row) == ("processing", 1)
+
+
+
+def test_job_detail_query_hides_another_users_job() -> None:
+    db = make_db()
+    add_user_and_job(db, "user-2", "friend-job")
+    detail_sql = api_sql_containing(
+        "SELECT id, source_url AS sourceUrl",
+    )
+    # Use the exact detail query rather than the list query.
+    detail_sql = next(
+        line.strip().strip('"').rstrip('",')
+        for line in API_SOURCE.splitlines()
+        if "SELECT id, source_url AS sourceUrl" in line
+        and "WHERE id = ?1 AND user_id = ?2" in line
+    )
+    row = db.execute(detail_sql, ("friend-job", "user-1")).fetchone()
+    assert row is None
+
+
+def test_clip_list_query_hides_another_users_clips() -> None:
+    db = make_db()
+    add_user_and_job(db, "user-2", "friend-job")
+    db.execute(
+        "INSERT INTO clips (id, job_id, user_id, output_key, title) VALUES (?, ?, ?, ?, ?)",
+        ("clip-owner", "job-1", "user-1", "users/user-1/clips/clip-owner.mp4", "Mine"),
+    )
+    db.execute(
+        "INSERT INTO clips (id, job_id, user_id, output_key, title) VALUES (?, ?, ?, ?, ?)",
+        ("clip-friend", "friend-job", "user-2", "users/user-2/clips/clip-friend.mp4", "Friend"),
+    )
+    clips_sql = api_sql_containing("FROM clips WHERE user_id = ?1")
+    rows = db.execute(clips_sql, ("user-1",)).fetchall()
+    assert {row["id"] for row in rows} == {"clip-owner"}
+
+
+def test_cancel_all_query_only_marks_authenticated_users_jobs() -> None:
+    db = make_db()
+    add_user_and_job(db, "user-1", "own-queued-job")
+    add_user_and_job(db, "user-2", "friend-queued-job")
+    cancel_all_sql = api_sql_containing(
+        "WHERE user_id = ?1 AND status IN ('queued','processing')"
+    )
+    db.execute(cancel_all_sql, ("user-1",))
+    states = {
+        row["id"]: row["cancel_requested"]
+        for row in db.execute(
+            "SELECT id, cancel_requested FROM jobs WHERE id IN ('own-queued-job','friend-queued-job')"
+        )
+    }
+    assert states == {"own-queued-job": 1, "friend-queued-job": 0}
