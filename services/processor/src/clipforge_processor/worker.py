@@ -44,6 +44,7 @@ async def run_once() -> int:
                 lease_id,
                 lease_token,
                 source_id=metadata.source_id,
+                source_platform=metadata.platform,
                 source_type=metadata.source_type,
                 title=metadata.title,
                 duration_seconds=metadata.duration_seconds,
