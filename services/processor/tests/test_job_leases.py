@@ -223,3 +223,42 @@ def test_job_list_query_is_scoped_to_authenticated_user() -> None:
     list_sql = api_sql_containing("SELECT id, source_url AS sourceUrl")
     rows = db.execute(list_sql, ("user-1", 100)).fetchall()
     assert {row["id"] for row in rows} == {"job-1"}
+
+
+
+def test_failure_callback_requires_current_unexpired_lease() -> None:
+    db = make_db()
+    db.execute(
+        "UPDATE jobs SET lease_expires_at = datetime('now', '+90 seconds') WHERE id = 'job-1'"
+    )
+    fail = route_update_sql("fail")
+
+    stale_result = db.execute(
+        fail, ("source_unavailable", "job-1", "lease-old", "hash-wrong")
+    )
+    assert stale_result.rowcount == 0
+
+    valid_result = db.execute(
+        fail, ("source_unavailable", "job-1", "lease-old", "hash-old")
+    )
+    assert valid_result.rowcount == 1
+    row = db.execute(
+        "SELECT status, stage, error_code, lease_id, lease_token_hash FROM jobs WHERE id = 'job-1'"
+    ).fetchone()
+    assert tuple(row) == ("failed", "failed", "source_unavailable", None, None)
+
+
+def test_failure_callback_acknowledges_cancellation_without_marking_failed() -> None:
+    db = make_db()
+    db.execute(
+        "UPDATE jobs SET lease_expires_at = datetime('now', '+90 seconds'), cancel_requested = 1 WHERE id = 'job-1'"
+    )
+    result = db.execute(
+        route_update_sql("fail"),
+        ("processing_error", "job-1", "lease-old", "hash-old"),
+    )
+    assert result.rowcount == 1
+    row = db.execute(
+        "SELECT status, stage, error_code, lease_id FROM jobs WHERE id = 'job-1'"
+    ).fetchone()
+    assert tuple(row) == ("cancelled", "cancelled", None, None)
