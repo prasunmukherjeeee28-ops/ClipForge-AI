@@ -28,8 +28,9 @@ def test_matching_is_one_to_one_and_reports_boundary_error() -> None:
     assert result["matchedHighlights"] == 1
     assert result["precisionAtK"] == 0.5
     assert result["recallAtK"] == 1.0
-    assert result["meanStartBoundaryErrorSeconds"] == 0.0
-    assert result["meanEndBoundaryErrorSeconds"] == 0.0
+    # The higher-ranked prediction wins when both compete for the same label.
+    assert result["meanStartBoundaryErrorSeconds"] == 1.0
+    assert result["meanEndBoundaryErrorSeconds"] == 1.0
     assert result["duplicatePredictionRateAtK"] == 1.0
 
 
