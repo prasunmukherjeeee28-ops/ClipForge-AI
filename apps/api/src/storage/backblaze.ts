@@ -21,12 +21,24 @@ export interface MultipartUpload {
   abort(): Promise<void>;
 }
 
-const encodeKey = (key: string) => key.split("/").map(encodeURIComponent).join("/");
+const encodeSegment = (value: string) =>
+  encodeURIComponent(value).replace(/[!'()*]/g, (character) =>
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+const encodeKey = (key: string) => key.split("/").map(encodeSegment).join("/");
 const xmlValue = (xml: string, tag: string): string | null => {
   const match = new RegExp(`<(?:[A-Za-z0-9]+:)?${tag}>([\\s\\S]*?)</(?:[A-Za-z0-9]+:)?${tag}>`).exec(xml);
   return match?.[1]?.trim() ?? null;
 };
 const escapeXml = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
+
+function contentLength(response: Response): number {
+  const value = response.headers.get("content-length");
+  if (value === null || !/^\d+$/.test(value)) throw new Error("Object storage returned an invalid content length.");
+  const size = Number(value);
+  if (!Number.isSafeInteger(size) || size < 0) throw new Error("Object storage returned an invalid content length.");
+  return size;
+}
 
 export class BackblazeBucket {
   private readonly client: AwsClient;
@@ -34,7 +46,16 @@ export class BackblazeBucket {
 
   constructor(private readonly config: ObjectStorageConfig) {
     this.base = new URL(config.endpoint.endsWith("/") ? config.endpoint : config.endpoint + "/");
-    if (this.base.protocol !== "https:") throw new Error("Object storage endpoint must use HTTPS.");
+    if (this.base.protocol !== "https:" || this.base.username || this.base.password ||
+        this.base.search || this.base.hash || !this.base.hostname) {
+      throw new Error("Object storage endpoint must be a clean HTTPS endpoint.");
+    }
+    if (!/^[a-z0-9][a-z0-9.-]{4,48}[a-z0-9]$/.test(config.bucket)) {
+      throw new Error("Invalid Backblaze B2 bucket name.");
+    }
+    if (!config.region || !config.accessKeyId || !config.secretAccessKey) {
+      throw new Error("Object storage region and credentials are required.");
+    }
     this.client = new AwsClient({
       accessKeyId: config.accessKeyId,
       secretAccessKey: config.secretAccessKey,
@@ -44,7 +65,7 @@ export class BackblazeBucket {
   }
 
   private url(key: string, query?: Record<string, string>): URL {
-    const url = new URL(encodeURIComponent(this.config.bucket) + "/" + encodeKey(key), this.base);
+    const url = new URL(encodeSegment(this.config.bucket) + "/" + encodeKey(key), this.base);
     for (const [name, value] of Object.entries(query ?? {})) url.searchParams.set(name, value);
     return url;
   }
@@ -62,32 +83,37 @@ export class BackblazeBucket {
     const response = await this.client.fetch(this.url(key), { method: "HEAD" });
     if (response.status === 404 || response.status === 410) return null;
     if (!response.ok) throw new Error(`Object storage HEAD failed (${response.status}).`);
-    return {
-      size: Number(response.headers.get("content-length") ?? 0),
-      etag: response.headers.get("etag"),
-    };
+    return { size: contentLength(response), etag: response.headers.get("etag") };
   }
 
   async get(key: string, options?: { range?: { offset: number; length: number } }): Promise<StoredObject | null> {
     const headers = new Headers();
-    if (options?.range) {
-      const { offset, length } = options.range;
-      if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 1) {
+    const range = options?.range;
+    if (range) {
+      const { offset, length } = range;
+      if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) ||
+          offset < 0 || length < 1 || !Number.isSafeInteger(offset + length - 1)) {
         throw new Error("Invalid object byte range.");
       }
       headers.set("Range", `bytes=${offset}-${offset + length - 1}`);
     }
     const response = await this.client.fetch(this.url(key), { method: "GET", headers });
     if (response.status === 404 || response.status === 410) return null;
-    if (!response.ok && response.status !== 206) {
-      throw new Error(`Object storage GET failed (${response.status}).`);
+    if (range ? response.status !== 206 : response.status !== 200) {
+      throw new Error(`Object storage GET returned an unexpected status (${response.status}).`);
     }
     if (!response.body) throw new Error("Object storage returned an empty response body.");
-    return {
-      body: response.body as ReadableStream<Uint8Array>,
-      size: Number(response.headers.get("content-length") ?? 0),
-      etag: response.headers.get("etag"),
-    };
+    const size = contentLength(response);
+    if (range && size !== range.length) {
+      throw new Error("Object storage returned an incomplete byte range.");
+    }
+    if (range) {
+      const contentRange = response.headers.get("content-range");
+      if (!contentRange || !contentRange.startsWith(`bytes ${range.offset}-${range.offset + range.length - 1}/`)) {
+        throw new Error("Object storage returned an invalid content range.");
+      }
+    }
+    return { body: response.body as ReadableStream<Uint8Array>, size, etag: response.headers.get("etag") };
   }
 
   async delete(key: string): Promise<void> {
@@ -111,11 +137,14 @@ export class BackblazeBucket {
   }
 
   resumeMultipartUpload(key: string, uploadId: string): MultipartUpload {
+    if (!uploadId || uploadId.length > 2048) throw new Error("Invalid multipart upload ID.");
     const partUrl = (partNumber: number) => this.url(key, { partNumber: String(partNumber), uploadId });
     return {
       uploadId,
       uploadPart: async (partNumber, body) => {
-        if (!Number.isSafeInteger(partNumber) || partNumber < 1 || partNumber > 10000) throw new Error("Invalid multipart part number.");
+        if (!Number.isSafeInteger(partNumber) || partNumber < 1 || partNumber > 10000) {
+          throw new Error("Invalid multipart part number.");
+        }
         const response = await this.client.fetch(partUrl(partNumber), { method: "PUT", body });
         if (!response.ok) throw new Error(`Multipart part upload failed (${response.status}).`);
         const etag = response.headers.get("etag");
@@ -125,9 +154,10 @@ export class BackblazeBucket {
       complete: async (parts) => {
         if (!parts.length || parts.length > 10000) throw new Error("Invalid multipart completion list.");
         const ordered = [...parts].sort((a, b) => a.partNumber - b.partNumber);
-        if (ordered.some((part, index) => part.partNumber !== index + 1 || !part.etag)) {
-          throw new Error("Multipart parts must be contiguous and include ETags.");
-        }
+        if (ordered.some((part, index) =>
+          !Number.isSafeInteger(part.partNumber) || part.partNumber !== index + 1 ||
+          typeof part.etag !== "string" || !part.etag.trim() || part.etag.length > 256
+        )) throw new Error("Multipart parts must be contiguous and include valid ETags.");
         const body = `<CompleteMultipartUpload>${ordered.map((part) =>
           `<Part><PartNumber>${part.partNumber}</PartNumber><ETag>${escapeXml(part.etag)}</ETag></Part>`,
         ).join("")}</CompleteMultipartUpload>`;
@@ -137,14 +167,14 @@ export class BackblazeBucket {
           body,
         }, { uploadId });
         const xml = await response.text();
-        if (/<(?:[A-Za-z0-9]+:)?Error>/.test(xml)) throw new Error("Object storage reported a multipart completion error.");
+        if (/<(?:[A-Za-z0-9]+:)?Error(?:\s|>)/.test(xml)) {
+          throw new Error("Object storage reported a multipart completion error.");
+        }
         const object = await this.head(key);
         if (!object) throw new Error("Completed object is not visible.");
         return { size: object.size };
       },
-      abort: async () => {
-        await this.request(key, { method: "DELETE" }, { uploadId });
-      },
+      abort: async () => { await this.request(key, { method: "DELETE" }, { uploadId }); },
     };
   }
 }

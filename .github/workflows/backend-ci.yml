@@ -44,6 +44,8 @@ jobs:
           node-version: 20
       - name: Install API dependencies
         run: npm install
+      - name: Test object storage adapter
+        run: npm test
       - name: Typecheck Worker API
         run: npm run typecheck
       - name: Build the PWA for Worker Static Assets
