@@ -111,12 +111,9 @@ def score_chat_reactions(
     accepted.sort(key=lambda item: item[0])
     window_count = max(1, int((duration_seconds - 1) // step_seconds) + 1)
     counts = [0] * window_count
-    buckets: list[list[tuple[str, str]]] = [[] for _ in range(window_count)]
-
     for timestamp, author, text in accepted:
         index = min(window_count - 1, int(timestamp // step_seconds))
         counts[index] += 1
-        buckets[index].append((author, text))
 
     baseline = statistics.median(counts) if counts else 0.0
     results: list[ChatReactionWindow] = []
@@ -139,8 +136,10 @@ def score_chat_reactions(
         if message_count < min_messages or unique_authors < min_unique_authors:
             continue
 
-        text_counts = Counter(text for _, text in in_window)
-        duplicate_messages = sum(count - 1 for count in text_counts.values() if count > 1)
+        # Repeated text from one author is likely spam; the same emote or
+        # short reaction from different viewers is often genuine consensus.
+        author_text_counts = Counter(in_window)
+        duplicate_messages = sum(count - 1 for count in author_text_counts.values() if count > 1)
         duplicate_ratio = duplicate_messages / message_count
         reaction_count = sum(_reaction_count(text) for _, text in in_window)
 
