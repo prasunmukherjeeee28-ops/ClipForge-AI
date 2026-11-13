@@ -243,6 +243,10 @@ export function getClipDownloadUrl(clipId: string): string {
   return `${API_BASE}/api/clips/${encodeURIComponent(clipId)}/download`;
 }
 
+export function getClipPreviewUrl(clipId: string): string {
+  return `${API_BASE}/api/clips/${encodeURIComponent(clipId)}/preview`;
+}
+
 export async function cancelClipRender(clipId: string): Promise<void> {
   await request<{ cancelled: boolean }>(
     `/api/clips/${encodeURIComponent(clipId)}/cancel`,
