@@ -222,8 +222,8 @@ def test_transcription_ready_rejects_stale_expired_cancelled_and_wrong_owner() -
 
 def moment_candidate_insert_sql() -> str:
     marker = 'app.post("/internal/processor/transcription-ready"'
-    section = API_SOURCE.split(marker, 1)[1].split("\\napp.post(", 1)[0]
-    match = re.search(r"`(INSERT INTO candidates[\\s\\S]+?)`", section)
+    section = API_SOURCE.split(marker, 1)[1].split("\napp.post(", 1)[0]
+    match = re.search(r"`(INSERT INTO candidates[\s\S]+?)`", section)
     assert match, "Could not find owner-lease-scoped moment candidate INSERT"
     return match.group(1)
 
