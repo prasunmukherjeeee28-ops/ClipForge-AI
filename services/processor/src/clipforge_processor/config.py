@@ -32,6 +32,7 @@ class Settings:
     stt_chunk_timeout_seconds: int = 1800
     moments_timeout_seconds: int = 1800
     render_timeout_seconds: int = 900
+    poll_interval_seconds: int = 5
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -121,4 +122,5 @@ class Settings:
             stt_chunk_timeout_seconds=bounded_int("PROCESSOR_STT_CHUNK_TIMEOUT_SECONDS", 1800, 60, 3600),
             moments_timeout_seconds=bounded_int("PROCESSOR_MOMENTS_TIMEOUT_SECONDS", 1800, 60, 3600),
             render_timeout_seconds=bounded_int("PROCESSOR_RENDER_TIMEOUT_SECONDS", 900, 60, 3600),
+            poll_interval_seconds=bounded_int("PROCESSOR_POLL_INTERVAL_SECONDS", 5, 1, 120),
         )
