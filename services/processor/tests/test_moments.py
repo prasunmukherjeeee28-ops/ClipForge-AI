@@ -220,4 +220,6 @@ def test_short_speech_burst_scores_above_evenly_spread_speech(tmp_path: Path) ->
         audio, distributed_transcript, window_seconds=(15,), step_seconds=1, score_threshold=0,
     )
     assert clustered_result and distributed_result
-    assert clustered_result[0].transcript_velocity > distributed_result[0].transcript_velocity
+    assert max(item.transcript_velocity for item in clustered_result) > max(
+        item.transcript_velocity for item in distributed_result
+    )
