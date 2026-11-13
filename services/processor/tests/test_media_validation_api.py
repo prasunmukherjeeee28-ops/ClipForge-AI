@@ -263,7 +263,8 @@ def test_moment_candidates_are_persisted_only_for_the_active_owner_lease() -> No
     assert tuple(row) == (12.0, 42.0, 0.82, 0.9, "user-1")
 
     stale = db.execute(sql, ("job-1", "stale-lease", "hash-1", payload))
-    friend = db.execute(sql, ("friend-job", "lease-1", "hash-1", payload))
+    db.execute("UPDATE jobs SET source_asset_id = 'asset-1' WHERE id = 'friend-job'")
+    wrong_owner_asset = db.execute(sql, ("friend-job", "lease-1", "hash-1", payload))
     assert stale.rowcount == 0
-    assert friend.rowcount == 0
+    assert wrong_owner_asset.rowcount == 0
     assert db.execute("SELECT COUNT(*) FROM candidates").fetchone()[0] == 1
