@@ -231,6 +231,74 @@ app.post("/internal/processor/source-metadata", async (c) => {
   return c.json({ ok: true, sourceMetadataSaved: true });
 });
 
+app.post("/internal/processor/source-asset", async (c) => {
+  const body = parseProcessorBody<{ jobId?: string; leaseId?: string; leaseToken?: string }>(c);
+  if (!body?.jobId || !body.leaseId || !body.leaseToken) {
+    return jsonError(c, "Invalid source-asset request.", 400);
+  }
+  const tokenHash = await sha256Hex(body.leaseToken);
+  const asset = await c.env.DB.prepare(
+    "SELECT source_assets.object_key AS objectKey, source_assets.filename AS filename, source_assets.content_type AS contentType, source_assets.size_bytes AS sizeBytes FROM jobs INNER JOIN source_assets ON source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id WHERE jobs.id = ?1 AND jobs.lease_id = ?2 AND jobs.lease_token_hash = ?3 AND jobs.status = 'processing' AND jobs.cancel_requested = 0 AND jobs.lease_expires_at > CURRENT_TIMESTAMP AND source_assets.status = 'ready'",
+  ).bind(body.jobId, body.leaseId, tokenHash).first<{
+    objectKey: string; filename: string; contentType: string; sizeBytes: number;
+  }>();
+  if (!asset) return jsonError(c, "No ready source asset is attached to this active lease.", 409);
+
+  const stored = await c.env.MEDIA.get(asset.objectKey);
+  if (!stored) return jsonError(c, "The private source object is missing.", 409);
+  if (stored.size !== asset.sizeBytes) {
+    return jsonError(c, "Stored source size does not match its verified upload record.", 409);
+  }
+
+  // Stream the private R2 object directly; never buffer multi-gigabyte media in a Worker.
+  return new Response(stored.body, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "Content-Length": String(stored.size),
+      "Cache-Control": "private, no-store",
+      "X-ClipForge-Source-Content-Type": asset.contentType,
+      "X-ClipForge-Source-Filename": encodeURIComponent(asset.filename),
+    },
+  });
+});
+
+app.post("/internal/processor/media-ready", async (c) => {
+  const body = parseProcessorBody<{
+    jobId?: string; leaseId?: string; leaseToken?: string;
+    container?: string; videoCodec?: string; sourceAudioCodec?: string;
+    width?: number; height?: number; durationSeconds?: number;
+    audioCodec?: string; audioSampleRate?: number; audioChannels?: number; audioSizeBytes?: number;
+  }>(c);
+  const boundedName = (value: unknown, max: number) =>
+    typeof value === "string" && value.length > 0 && value.length <= max && /^[A-Za-z0-9,._+-]+$/.test(value);
+  if (
+    !body?.jobId || !body.leaseId || !body.leaseToken ||
+    !boundedName(body.container, 100) ||
+    !boundedName(body.videoCodec, 50) ||
+    !boundedName(body.sourceAudioCodec, 50) ||
+    !boundedName(body.audioCodec, 50) ||
+    !Number.isInteger(body.width) || body.width! < 1 || body.width! > 7680 ||
+    !Number.isInteger(body.height) || body.height! < 1 || body.height! > 4320 ||
+    typeof body.durationSeconds !== "number" || !Number.isFinite(body.durationSeconds) || body.durationSeconds <= 0 || body.durationSeconds > 43200 ||
+    body.audioCodec !== "pcm_s16le" || body.audioSampleRate !== 16000 || body.audioChannels !== 1 ||
+    !Number.isSafeInteger(body.audioSizeBytes) || body.audioSizeBytes! < 1 || body.audioSizeBytes! > 1500000000
+  ) {
+    return jsonError(c, "Invalid media validation result.", 400);
+  }
+
+  const tokenHash = await sha256Hex(body.leaseToken);
+  const job = await c.env.DB.prepare(
+    "UPDATE jobs SET media_container = ?1, media_video_codec = ?2, media_source_audio_codec = ?3, media_width = ?4, media_height = ?5, media_duration_seconds = ?6, audio_codec = ?7, audio_sample_rate = ?8, audio_channels = ?9, audio_size_bytes = ?10, media_verified_at = CURRENT_TIMESTAMP, status = 'review', stage = 'audio_extracted', progress = MAX(progress, 35), error_code = NULL, lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?11 AND lease_id = ?12 AND lease_token_hash = ?13 AND status = 'processing' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP AND source_type = 'video' AND source_asset_id IS NOT NULL AND EXISTS (SELECT 1 FROM source_assets WHERE source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id AND source_assets.status = 'ready') RETURNING status",
+  ).bind(
+    body.container, body.videoCodec, body.sourceAudioCodec, body.width, body.height,
+    body.durationSeconds, body.audioCodec, body.audioSampleRate, body.audioChannels,
+    body.audioSizeBytes, body.jobId, body.leaseId, tokenHash,
+  ).first<{ status: "review" }>();
+  if (!job) return jsonError(c, "Lease is invalid, expired, cancelled, or no ready owner-matched source asset is attached.", 409);
+  return c.json({ ok: true, mediaReady: true, stage: "audio_extracted" });
+});
+
 app.post("/internal/processor/source-ready", async (c) => {
   const body = parseProcessorBody<{ jobId?: string; leaseId?: string; leaseToken?: string }>(c);
   if (!body?.jobId || !body.leaseId || !body.leaseToken) {
@@ -680,7 +748,7 @@ app.get("/api/jobs", async (c) => {
   const requestedLimit = Number(c.req.query("limit") ?? 50);
   const limit = Math.min(Math.max(Number.isFinite(requestedLimit) ? Math.trunc(requestedLimit) : 50, 1), 100);
   const result = await c.env.DB.prepare(
-    "SELECT id, source_url AS sourceUrl, source_platform AS sourcePlatform, source_type AS sourceType, source_id AS sourceId, source_duration_seconds AS sourceDurationSeconds, source_published_at AS sourcePublishedAt, source_verified_at AS sourceVerifiedAt, source_asset_id AS sourceAssetId, title, status, progress, stage, error_code AS errorCode, created_at AS createdAt, updated_at AS updatedAt FROM jobs WHERE user_id = ?1 ORDER BY created_at DESC LIMIT ?2",
+    "SELECT id, source_url AS sourceUrl, source_platform AS sourcePlatform, source_type AS sourceType, source_id AS sourceId, source_duration_seconds AS sourceDurationSeconds, source_published_at AS sourcePublishedAt, source_verified_at AS sourceVerifiedAt, source_asset_id AS sourceAssetId, media_container AS mediaContainer, media_video_codec AS mediaVideoCodec, media_source_audio_codec AS mediaSourceAudioCodec, media_width AS mediaWidth, media_height AS mediaHeight, media_duration_seconds AS mediaDurationSeconds, audio_codec AS audioCodec, audio_sample_rate AS audioSampleRate, audio_channels AS audioChannels, audio_size_bytes AS audioSizeBytes, media_verified_at AS mediaVerifiedAt, title, status, progress, stage, error_code AS errorCode, created_at AS createdAt, updated_at AS updatedAt FROM jobs WHERE user_id = ?1 ORDER BY created_at DESC LIMIT ?2",
   )
     .bind(user.id, limit)
     .all();
@@ -689,7 +757,7 @@ app.get("/api/jobs", async (c) => {
 
 app.get("/api/jobs/:jobId", async (c) => {
   const job = await c.env.DB.prepare(
-    "SELECT id, source_url AS sourceUrl, source_platform AS sourcePlatform, source_type AS sourceType, source_id AS sourceId, source_duration_seconds AS sourceDurationSeconds, source_published_at AS sourcePublishedAt, source_verified_at AS sourceVerifiedAt, source_asset_id AS sourceAssetId, title, status, progress, stage, error_code AS errorCode, created_at AS createdAt, updated_at AS updatedAt FROM jobs WHERE id = ?1 AND user_id = ?2",
+    "SELECT id, source_url AS sourceUrl, source_platform AS sourcePlatform, source_type AS sourceType, source_id AS sourceId, source_duration_seconds AS sourceDurationSeconds, source_published_at AS sourcePublishedAt, source_verified_at AS sourceVerifiedAt, source_asset_id AS sourceAssetId, media_container AS mediaContainer, media_video_codec AS mediaVideoCodec, media_source_audio_codec AS mediaSourceAudioCodec, media_width AS mediaWidth, media_height AS mediaHeight, media_duration_seconds AS mediaDurationSeconds, audio_codec AS audioCodec, audio_sample_rate AS audioSampleRate, audio_channels AS audioChannels, audio_size_bytes AS audioSizeBytes, media_verified_at AS mediaVerifiedAt, title, status, progress, stage, error_code AS errorCode, created_at AS createdAt, updated_at AS updatedAt FROM jobs WHERE id = ?1 AND user_id = ?2",
   )
     .bind(c.req.param("jobId"), c.get("user").id)
     .first();
