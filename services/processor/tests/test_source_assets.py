@@ -204,7 +204,7 @@ def test_delete_reservation_closes_attach_delete_race() -> None:
     add_asset(db, "asset-1", "user-1")
     add_job(db, "job-1", "user-1")
     reserve_delete = source_asset_delete_reservation_sql()
-    reserved = db.execute(reserve_delete, ("asset-1", "user-1", "asset-1")).fetchone()
+    reserved = db.execute(reserve_delete, ("asset-1", "user-1")).fetchone()
     assert reserved is not None
     assert reserved["objectKey"] == "source-assets/user-1/asset-1/source"
 
@@ -221,7 +221,7 @@ def test_delete_reservation_closes_attach_delete_race() -> None:
     add_job(db, "job-2", "user-1")
     attached = db.execute(attach, ("asset-2", "job-2", "user-1"))
     assert attached.rowcount == 1
-    reserved = db.execute(reserve_delete, ("asset-2", "user-1", "asset-2")).fetchone()
+    reserved = db.execute(reserve_delete, ("asset-2", "user-1")).fetchone()
     assert reserved is None
 
 
@@ -235,13 +235,13 @@ def test_delete_reservation_waits_for_inflight_upload_parts_and_finalization() -
         """
     )
     reserve_delete = source_asset_delete_reservation_sql()
-    blocked = db.execute(reserve_delete, ("asset-1", "user-1", "asset-1")).fetchone()
+    blocked = db.execute(reserve_delete, ("asset-1", "user-1")).fetchone()
     assert blocked is None
 
     db.execute(
         "UPDATE source_asset_parts SET status = 'uploaded', etag = 'etag-1' WHERE asset_id = 'asset-1'"
     )
-    allowed = db.execute(reserve_delete, ("asset-1", "user-1", "asset-1")).fetchone()
+    allowed = db.execute(reserve_delete, ("asset-1", "user-1")).fetchone()
     assert allowed is not None
     row = db.execute(
         "SELECT status, upload_id FROM source_assets WHERE id = 'asset-1'"
@@ -263,7 +263,7 @@ def test_finalizing_asset_cannot_be_reserved_for_deletion() -> None:
     )
     reserve_delete = source_asset_delete_reservation_sql()
     result = db.execute(
-        reserve_delete, ("asset-finalizing", "user-1", "asset-finalizing")
+        reserve_delete, ("asset-finalizing", "user-1")
     ).fetchone()
     assert result is None
     assert db.execute(
