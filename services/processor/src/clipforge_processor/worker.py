@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import signal
+import shutil
 import threading
 import uuid
 from pathlib import Path
@@ -283,6 +284,7 @@ async def run_once() -> int:
         heartbeat_task = asyncio.create_task(
             _heartbeat_loop(client, job_id, lease_id, lease_token, stop_heartbeat, cancelled, lease_lost)
         )
+        job_dir: Path | None = None
 
         try:
             job_dir = _private_job_directory(settings.scratch_dir, user_id, job_id)
@@ -623,6 +625,10 @@ async def run_once() -> int:
             stop_heartbeat.set()
             heartbeat_task.cancel()
             await asyncio.gather(heartbeat_task, return_exceptions=True)
+            if job_dir is not None:
+                # Source media, transcripts and rendered clips are private user data.
+                # Never retain processor scratch artifacts after a job cycle.
+                shutil.rmtree(job_dir, ignore_errors=True)
     finally:
         await client.close()
 
