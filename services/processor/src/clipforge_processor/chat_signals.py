@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import statistics
 from collections import Counter
@@ -89,7 +90,14 @@ def score_chat_reactions(
         if not isinstance(message, ChatMessage):
             continue
         timestamp = message.timestamp_seconds
-        if not isinstance(timestamp, (int, float)) or not 0 <= timestamp < duration_seconds:
+        if (
+            isinstance(timestamp, bool)
+            or not isinstance(timestamp, (int, float))
+            or not math.isfinite(timestamp)
+            or not 0 <= timestamp < duration_seconds
+            or not isinstance(message.author, str)
+            or not isinstance(message.text, str)
+        ):
             continue
         author = message.author.strip()[:100].lower()
         text = _normalise_text(message.text)
@@ -136,7 +144,18 @@ def score_chat_reactions(
         duplicate_ratio = duplicate_messages / message_count
         reaction_count = sum(_reaction_count(text) for _, text in in_window)
 
-        volume_score = min(1.0, message_count / max(float(min_messages), baseline * 2.0, 1.0))
+        expected_window_messages = max(
+            float(min_messages),
+            baseline * window_seconds / step_seconds,
+        )
+        volume_score = min(
+            1.0,
+            max(0.0, (message_count / expected_window_messages - 1.0) / 1.5),
+        )
+        # A reaction-heavy but steady chat is not a burst. Require a measurable
+        # increase over the stream's normal message rate before ranking it.
+        if volume_score < 0.15:
+            continue
         participation_score = min(1.0, unique_authors / max(float(min_unique_authors * 2), 1.0))
         reaction_score = reaction_count / message_count
         score = (
