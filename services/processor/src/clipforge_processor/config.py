@@ -30,6 +30,7 @@ class Settings:
     stt_beam_size: int = 1
     stt_language: str | None = None
     stt_chunk_timeout_seconds: int = 1800
+    moments_timeout_seconds: int = 1800
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -117,4 +118,5 @@ class Settings:
             stt_beam_size=bounded_int("PROCESSOR_STT_BEAM_SIZE", 1, 1, 5),
             stt_language=stt_language,
             stt_chunk_timeout_seconds=bounded_int("PROCESSOR_STT_CHUNK_TIMEOUT_SECONDS", 1800, 60, 3600),
+            moments_timeout_seconds=bounded_int("PROCESSOR_MOMENTS_TIMEOUT_SECONDS", 1800, 60, 3600),
         )

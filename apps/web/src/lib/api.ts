@@ -128,3 +128,78 @@ export async function deleteSourceAsset(assetId: string): Promise<void> {
     { method: "DELETE" },
   );
 }
+
+export interface JobStatusSnapshot {
+  id: string;
+  status: "queued" | "processing" | "review" | "completed" | "failed" | "cancelled";
+  stage: string;
+  progress: number;
+  errorCode: string | null;
+  sourceDurationSeconds: number | null;
+  updatedAt: string;
+}
+
+export interface JobCandidate {
+  id: string;
+  startSeconds: number;
+  endSeconds: number;
+  title: string | null;
+  transcriptExcerpt: string;
+  score: number | null;
+  category: string;
+  rationale: string | null;
+  reviewStatus: "pending" | "selected" | "rejected";
+  signals: {
+    acousticSalience: number;
+    transcriptVelocity: number;
+    narrativeArc: number;
+    novelty: number;
+  };
+}
+
+export async function getJobStatus(jobId: string): Promise<JobStatusSnapshot> {
+  const result = await request<{ job: JobStatusSnapshot }>(
+    `/api/jobs/${encodeURIComponent(jobId)}`,
+  );
+  return result.job;
+}
+
+export async function getJobCandidates(jobId: string): Promise<JobCandidate[]> {
+  const result = await request<{
+    candidates: Array<Omit<JobCandidate, "signals"> & { signalsJson: string }>;
+  }>(`/api/jobs/${encodeURIComponent(jobId)}/candidates`);
+  return (result.candidates ?? []).map((candidate) => {
+    let signals: JobCandidate["signals"] = {
+      acousticSalience: 0,
+      transcriptVelocity: 0,
+      narrativeArc: 0,
+      novelty: 0,
+    };
+    try {
+      const parsed = JSON.parse(candidate.signalsJson) as Partial<JobCandidate["signals"]>;
+      signals = {
+        acousticSalience: Number(parsed.acousticSalience) || 0,
+        transcriptVelocity: Number(parsed.transcriptVelocity) || 0,
+        narrativeArc: Number(parsed.narrativeArc) || 0,
+        novelty: Number(parsed.novelty) || 0,
+      };
+    } catch {
+      // Malformed optional signal metadata is displayed as zero, not trusted.
+    }
+    const { signalsJson: _signalsJson, ...rest } = candidate;
+    return { ...rest, signals };
+  });
+}
+
+export async function reviewJobCandidate(
+  candidateId: string,
+  reviewStatus: "selected" | "rejected" | "pending",
+): Promise<void> {
+  await request<{ candidate: { id: string; reviewStatus: string } }>(
+    `/api/candidates/${encodeURIComponent(candidateId)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ reviewStatus }),
+    },
+  );
+}

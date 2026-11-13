@@ -51,6 +51,7 @@ class MomentCandidate:
     word_count: int
     marker_count: int
     rationale: str
+    transcript_excerpt: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -66,6 +67,7 @@ class MomentCandidate:
             "wordCount": self.word_count,
             "markerCount": self.marker_count,
             "rationale": self.rationale,
+            "transcriptExcerpt": self.transcript_excerpt,
         }
 
 
@@ -101,7 +103,9 @@ def extract_audio_seconds(
                 if not raw:
                     break
                 sample_count = len(raw) // 2
-                if sample_count == 0:
+                # The final partial second is deliberately excluded: candidate
+                # boundaries are whole-second windows and must not exceed media duration.
+                if sample_count < frames_per_second:
                     break
                 samples = np.frombuffer(raw, dtype="<i2")
                 floating = samples.astype(np.float32, copy=False)
@@ -337,9 +341,14 @@ def detect_moments(
             if novelty >= 0.45:
                 signals.append("uncommon reaction phrase")
             rationale = ", ".join(signals) if signals else "combined transcript and audio cues"
+            transcript_excerpt = " ".join(
+                segment["text"] for segment in segments
+                if segment["start"] < end and segment["end"] > start
+            )[:1000]
             candidates.append(MomentCandidate(
                 float(start), float(end), score, acoustic, transcript_velocity,
                 narrative, novelty, word_count, marker_count, rationale,
+                transcript_excerpt,
             ))
             if len(candidates) > MAX_CANDIDATES:
                 raise MomentDetectionError("candidate_limit_exceeded", "The candidate scan exceeded its configured safety limit.")
