@@ -159,6 +159,13 @@ class ProcessorClient:
             },
         )
 
+    async def mark_source_ready(self, job_id: str, lease_id: str, lease_token: str) -> dict[str, Any]:
+        """Move a VOD with a ready owner-provided file into the source-ready review state."""
+        return await self.post(
+            "/internal/processor/source-ready",
+            {"jobId": job_id, "leaseId": lease_id, "leaseToken": lease_token},
+        )
+
     async def release(self, job_id: str, lease_id: str, lease_token: str) -> dict[str, Any]:
         return await self.post(
             "/internal/processor/release",
