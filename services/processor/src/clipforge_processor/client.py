@@ -240,6 +240,50 @@ class ProcessorClient:
             },
         )
 
+    async def report_transcription_ready(
+        self,
+        job_id: str,
+        lease_id: str,
+        lease_token: str,
+        *,
+        container: str,
+        video_codec: str,
+        source_audio_codec: str,
+        width: int,
+        height: int,
+        duration_seconds: float,
+        audio_size_bytes: int,
+        transcript_model: str,
+        transcript_language: str | None,
+        transcript_segment_count: int,
+        transcript_size_bytes: int,
+        transcript_sha256: str,
+    ) -> dict[str, Any]:
+        """Persist media and transcript metadata and complete this leased processing stage."""
+        return await self.post(
+            "/internal/processor/transcription-ready",
+            {
+                "jobId": job_id,
+                "leaseId": lease_id,
+                "leaseToken": lease_token,
+                "container": container,
+                "videoCodec": video_codec,
+                "sourceAudioCodec": source_audio_codec,
+                "width": width,
+                "height": height,
+                "durationSeconds": duration_seconds,
+                "audioCodec": "pcm_s16le",
+                "audioSampleRate": 16000,
+                "audioChannels": 1,
+                "audioSizeBytes": audio_size_bytes,
+                "transcriptModel": transcript_model,
+                "transcriptLanguage": transcript_language,
+                "transcriptSegmentCount": transcript_segment_count,
+                "transcriptSizeBytes": transcript_size_bytes,
+                "transcriptSha256": transcript_sha256,
+            },
+        )
+
     async def mark_source_ready(self, job_id: str, lease_id: str, lease_token: str) -> dict[str, Any]:
         """Move a VOD with a ready owner-provided file into the source-ready review state."""
         return await self.post(
