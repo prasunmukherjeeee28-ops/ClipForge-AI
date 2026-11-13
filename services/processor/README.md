@@ -17,7 +17,7 @@ It does not scrape platform pages, extract undocumented playback URLs, bypass ac
 
 ## Requirements
 - Python 3.11+\n- FFmpeg and FFprobe installed on the processor host and available on PATH (or configured with `FFMPEG_BINARY` / `FFPROBE_BINARY`).\n- A persistent, access-restricted processor volume mounted at `PROCESSOR_SCRATCH_DIR`; the audio artifact must remain on the same trusted worker host for the upcoming transcription stage.
-- A deployed Worker with migrations `0001_initial.sql` through `0005_authorized_source_assets.sql` applied.
+- A deployed Worker with migrations `0001_initial.sql` through `0006_media_validation.sql` applied.
 - Cloudflare Access configured for the two intended users.
 - Worker secret `PROCESSOR_SHARED_SECRET` set to a random value of at least 32 characters.
 - The same secret supplied to this process through its environment. Never put it in Git.
