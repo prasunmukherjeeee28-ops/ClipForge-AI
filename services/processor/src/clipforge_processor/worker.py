@@ -579,5 +579,37 @@ async def run_once() -> int:
         await client.close()
 
 
+async def run_forever() -> None:
+    """Continuously poll the D1-backed queue without running concurrent jobs."""
+    settings = Settings.from_env()
+    print(
+        "ClipForge processor online:",
+        json.dumps(
+            {
+                "workerId": settings.worker_id,
+                "pollIntervalSeconds": settings.poll_interval_seconds,
+                "scratchDir": settings.scratch_dir,
+            }
+        ),
+        flush=True,
+    )
+    while True:
+        try:
+            await run_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Do not print request bodies, signed headers, tokens or provider secrets.
+            print(
+                "Processor cycle could not start:",
+                json.dumps({"errorType": type(exc).__name__}),
+                flush=True,
+            )
+        await asyncio.sleep(settings.poll_interval_seconds)
+
+
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(run_once()))
+    try:
+        asyncio.run(run_forever())
+    except KeyboardInterrupt:
+        print("ClipForge processor stopped.", flush=True)
