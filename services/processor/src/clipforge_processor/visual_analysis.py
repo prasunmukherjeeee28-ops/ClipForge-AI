@@ -271,7 +271,7 @@ def analyze_candidate_windows(
             and math.isfinite(float(score)) and start >= 0 and end > start
         ),
         key=lambda item: (-item[2], item[0]),
-    )[:max_windows]
+    )[:min(max_windows, max_samples // 2)]
     if not ranked:
         return {}
     samples_per_window = max(2, min(24, max_samples // len(ranked)))
@@ -304,7 +304,8 @@ def analyze_candidate_windows(
                     frame = cv2.resize(frame, (max(1, round(width * scale)), max(1, round(height * scale))))
                 small = cv2.resize(frame, (320, 180))
                 gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-                histogram = cv2.calcHist([small], [0, 1], None, [16, 16], [0, 180, 0, 256])
+                hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+                histogram = cv2.calcHist([hsv], [0, 1], None, [16, 16], [0, 180, 0, 256])
                 cv2.normalize(histogram, histogram, 0, 1, cv2.NORM_MINMAX)
                 if previous_gray is not None:
                     difference = float(np.mean(cv2.absdiff(previous_gray, gray))) / 255.0
