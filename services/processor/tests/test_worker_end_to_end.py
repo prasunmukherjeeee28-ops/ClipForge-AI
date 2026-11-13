@@ -114,11 +114,14 @@ def test_run_once_completes_claimed_vod_through_private_clip_registration(monkey
     monkeypatch.setattr(worker_module.Settings, "from_env", lambda: settings)
     monkeypatch.setattr(worker_module, "ProcessorClient", make_client)
     monkeypatch.setattr(worker_module, "inspect_video_url", fake_inspect)
-    monkeypatch.setattr(worker_module, "probe_media", lambda *a, **k: SimpleNamespace(
-        container="mov,mp4", video_codec="h264", audio_codec="aac",
-        width=1920, height=1080, duration_seconds=60.0,
-        source_sample_rate=48000, source_channels=2,
-    ))
+    async def fake_probe(*args, **kwargs):
+        return SimpleNamespace(
+            container="mov,mp4", video_codec="h264", audio_codec="aac",
+            width=1920, height=1080, duration_seconds=60.0,
+            source_sample_rate=48000, source_channels=2,
+        )
+
+    monkeypatch.setattr(worker_module, "probe_media", fake_probe)
     monkeypatch.setattr(worker_module, "extract_audio", fake_extract)
     monkeypatch.setattr(worker_module, "run_transcription_process", fake_transcribe)
     monkeypatch.setattr(worker_module, "detect_moments", fake_detect)
