@@ -16,6 +16,9 @@ on:
       - "apps/api/**"
       - "services/processor/**"
       - ".github/workflows/backend-ci.yml"
+      - "compose.processor.yaml"
+      - ".gitignore"
+      - ".dockerignore"
   workflow_dispatch:
 
 permissions:
