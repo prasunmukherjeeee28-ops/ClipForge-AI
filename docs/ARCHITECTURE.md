@@ -52,8 +52,9 @@ These are ordinary modules/functions inside one analysis service. Scores are est
 8. The processor streams the attached private R2 object only under the current owner-matched job lease, then FFprobe validates the actual video/audio streams, duration and dimensions.
 9. FFmpeg extracts mono 16 kHz PCM WAV audio to a private persistent scratch volume partitioned by user UUID and job UUID; the temporary downloaded source is removed after successful extraction.
 10. faster-whisper transcribes the WAV locally using CPU INT8 and bounded five-minute chunks. Each completed chunk is atomically checkpointed; the final transcript contains absolute segment and word timestamps. Audio and transcript text remain on the private processor volume. D1 stores only the transcript model, language, segment count, size and SHA-256 digest; the job transitions to `review` / `transcribed`.
-11. AI modules evaluate candidate moments and suggest boundaries, titles and crop guidance; FFmpeg renders vertical clips and subtitles.
-12. Exports are stored in private R2; metadata/status are saved in D1, and the web app provides owner-authorized playback/download.
+11. A deterministic local analysis pass computes one-second RMS/ZCR audio features, transcript word density and reaction-phrase signals. It evaluates multi-scale overlapping candidate windows, combines acoustic salience, transcript velocity, setup/peak/payoff proxies and within-VOD phrase rarity, then applies temporal IoU NMS. The first implementation uses no external model and does not infer semantic categories or titles.
+12. The next integration stores owner-scoped candidate rows and exposes candidate review. Optional provider adapters may refine only the shortlist after local quality is measured; acoustic event classifiers are deferred until benchmarked on the target processor.
+13. FFmpeg renders vertical clips and subtitles; exports are stored in private R2 and metadata/status are saved in D1 for owner-authorized playback/download.
 
 ## Cancellation and recovery
 - A queued job is marked cancelled immediately.
@@ -72,4 +73,4 @@ These are ordinary modules/functions inside one analysis service. Scores are est
 - Use only media you own or have permission to process; do not bypass platform access controls.
 
 ## Build order
-UI shell → auth and D1 job lifecycle → processor polling/lease smoke test → authorized VOD ingestion → local transcription → AI candidate detection → FFmpeg rendering → private R2 publishing → live capture for authorized sources.
+UI shell → auth and D1 job lifecycle → processor polling/lease smoke test → authorized VOD ingestion → local transcription → deterministic candidate analysis → optional semantic refinement → FFmpeg rendering → private R2 publishing → live capture for authorized sources.
