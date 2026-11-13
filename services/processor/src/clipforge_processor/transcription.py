@@ -229,10 +229,13 @@ def transcribe_audio(
         raise TranscriptionError("transcription_storage_invalid", "The transcript checkpoint directory must not be a symlink.")
     chunk_dir.mkdir(mode=0o700, exist_ok=True)
 
+    audio_size_bytes = audio_path.stat().st_size
+    audio_sha256 = _file_sha256(audio_path)
     state = {
         "formatVersion": TRANSCRIPT_FORMAT_VERSION,
         "sourceAssetId": source_asset_id,
-        "audioSizeBytes": audio_path.stat().st_size,
+        "audioSizeBytes": audio_size_bytes,
+        "audioSha256": audio_sha256,
         "durationSeconds": round(duration_seconds, 3),
         "model": model_name,
         "chunkSeconds": chunk_seconds,
@@ -392,18 +395,7 @@ def transcribe_audio(
     temporary_transcript.unlink(missing_ok=True)
     try:
         with temporary_transcript.open("w", encoding="utf-8") as target:
-            target.write(json.dumps({
-                "formatVersion": TRANSCRIPT_FORMAT_VERSION,
-                "sourceAssetId": source_asset_id,
-                "durationSeconds": round(duration_seconds, 3),
-                "model": model_name,
-                "language": detected_language,
-                "segments": [],
-            }, ensure_ascii=False, separators=(",", ":"))[:-2])
-            # Replace the empty array opener with a streaming array to avoid loading
-            # a long livestream transcript into memory.
-            target.seek(0)
-            target.truncate()
+            # Stream segments from chunk checkpoints to keep memory bounded on long VODs.
             header = {
                 "formatVersion": TRANSCRIPT_FORMAT_VERSION,
                 "sourceAssetId": source_asset_id,
