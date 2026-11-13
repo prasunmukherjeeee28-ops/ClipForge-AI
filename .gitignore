@@ -43,6 +43,9 @@ processor-model-cache/
 *.wav
 *.srt
 *.transcript.json
+*.onnx
+*.pt
+*.pth
 
 # OS/editor files
 .DS_Store
