@@ -69,6 +69,34 @@ Media-processing options:
 
 The source upload API caps input files at 2 GiB and source storage at 8 GiB per account. The processor caps normalized WAV output at 1.5 GB. Moment analysis currently caps transcript JSON at 100 MB and persists at most 50 shortlisted candidates per job. FFmpeg is invoked with argument arrays, never through a shell, with a bounded timeout and thread count.
 
+## Docker Compose deployment
+
+This runs one non-root processor container with FFmpeg/FFprobe installed, a read-only container filesystem, no published network ports, and persistent private volumes for scratch artifacts and the faster-whisper model cache. It does not deploy the Cloudflare Worker, create D1/R2 resources, or expose a public processor endpoint.
+
+From this directory:
+
+1. Copy `.env.example` to `.env`.
+2. Set `CLIPFORGE_API_BASE_URL` to the deployed Worker API URL.
+3. Set `PROCESSOR_SHARED_SECRET` to the same random secret configured on the Worker (at least 32 characters).
+4. Configure the official metadata API credentials used by your source types.
+5. Review the resource limits and scratch/model volume backup, encryption and retention policy for your host.
+
+Start and inspect the serial processor:
+
+```bash
+docker compose -f compose.yaml build
+docker compose -f compose.yaml up -d
+docker compose -f compose.yaml logs -f processor
+```
+
+Stop it:
+
+```bash
+docker compose -f compose.yaml down
+```
+
+Do not run a second replica for this MVP. The named Docker volumes persist after `down`; deleting volumes will remove private scratch/checkpoint files and cached model weights. The first transcription-model startup requires outbound HTTPS to fetch model weights unless the cache is pre-populated. Never commit `.env` or add secrets to the image. The container has no published ports; it initiates signed HTTPS requests to the Worker.
+
 ## Local setup
 
 From this directory:
