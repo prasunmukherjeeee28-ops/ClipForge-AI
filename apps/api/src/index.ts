@@ -1122,6 +1122,65 @@ app.post("/api/jobs/cancel-all", async (c) => {
   return c.json({ requestedCount: result.meta.changes ?? 0 });
 });
 
+app.get("/api/clips/:clipId/preview", async (c) => {
+  const clip = await c.env.DB.prepare(
+    "SELECT output_key AS outputKey FROM clips WHERE id = ?1 AND user_id = ?2",
+  ).bind(c.req.param("clipId"), c.get("user").id).first<{ outputKey: string }>();
+  if (!clip) return jsonError(c, "Clip not found.", 404);
+
+  const metadata = await c.env.MEDIA.head(clip.outputKey);
+  if (!metadata) return jsonError(c, "Clip file is unavailable.", 404);
+
+  const rangeHeader = c.req.header("Range");
+  if (!rangeHeader) {
+    const object = await c.env.MEDIA.get(clip.outputKey);
+    if (!object) return jsonError(c, "Clip file is unavailable.", 404);
+    return new Response(object.body, {
+      headers: {
+        "Content-Type": "video/mp4",
+        "Content-Length": String(object.size),
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": "inline",
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  }
+
+  const match = /^bytes=(\\d*)-(\\d*)$/.exec(rangeHeader);
+  if (!match || (!match[1] && !match[2]) || metadata.size <= 0) {
+    return new Response(null, {
+      status: 416,
+      headers: { "Content-Range": `bytes */${metadata.size}`, "Cache-Control": "private, no-store" },
+    });
+  }
+  const size = metadata.size;
+  const start = match[1] ? Number(match[1]) : Math.max(0, size - Number(match[2]));
+  const requestedEnd = match[2] && match[1] ? Number(match[2]) : size - 1;
+  const end = Math.min(requestedEnd, size - 1);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= size || end < start) {
+    return new Response(null, {
+      status: 416,
+      headers: { "Content-Range": `bytes */${size}`, "Cache-Control": "private, no-store" },
+    });
+  }
+
+  const object = await c.env.MEDIA.get(clip.outputKey, { range: { offset: start, length: end - start + 1 } });
+  if (!object) return jsonError(c, "Clip file is unavailable.", 404);
+  return new Response(object.body, {
+    status: 206,
+    headers: {
+      "Content-Type": "video/mp4",
+      "Content-Length": String(end - start + 1),
+      "Content-Range": `bytes ${start}-${end}/${size}`,
+      "Accept-Ranges": "bytes",
+      "Content-Disposition": "inline",
+      "Cache-Control": "private, no-store",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+});
+
 app.get("/api/clips/:clipId/download", async (c) => {
   const clip = await c.env.DB.prepare(
     "SELECT output_key AS outputKey, title FROM clips WHERE id = ?1 AND user_id = ?2",
