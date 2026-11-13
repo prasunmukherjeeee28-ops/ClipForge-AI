@@ -117,4 +117,5 @@ async def test_extract_audio_writes_normalized_private_wav(tmp_path: Path, monke
     assert "-ac" in calls[0] and "1" in calls[0]
     assert "-ar" in calls[0] and "16000" in calls[0]
     assert "-c:a" in calls[0] and "pcm_s16le" in calls[0]
+    assert "-fs" in calls[0] and str(1_500_000_000) in calls[0]
     assert not output.with_name("audio.wav.partial").exists()
