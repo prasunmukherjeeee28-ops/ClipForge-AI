@@ -1,0 +1,31 @@
+services:
+  processor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: clipforge-processor:local
+    env_file:
+      - .env
+    environment:
+      PROCESSOR_SCRATCH_DIR: /var/lib/clipforge/scratch
+      PROCESSOR_STT_MODEL_CACHE_DIR: /var/cache/clipforge/models
+      PROCESSOR_POLL_INTERVAL_SECONDS: ${PROCESSOR_POLL_INTERVAL_SECONDS:-5}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=1g,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    volumes:
+      - clipforge-scratch:/var/lib/clipforge/scratch
+      - clipforge-model-cache:/var/cache/clipforge/models
+
+# Keep these volumes private and persistent. Audio/transcript checkpoints live in
+# scratch; the model cache avoids downloading the transcription model on each boot.
+volumes:
+  clipforge-scratch:
+  clipforge-model-cache:
