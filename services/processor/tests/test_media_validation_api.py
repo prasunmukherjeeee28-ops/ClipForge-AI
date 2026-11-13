@@ -138,7 +138,7 @@ def test_media_ready_callback_persists_validated_probe_and_audio_metadata() -> N
     add_job(db, "job-1", "user-1", "asset-1")
     result = db.execute(media_ready_sql(), media_ready_values()).fetchone()
     assert result is not None
-    assert result["status"] == "processing"
+    assert result["status"] == "review"
     row = db.execute(
         """
         SELECT stage, progress, media_container, media_video_codec,
