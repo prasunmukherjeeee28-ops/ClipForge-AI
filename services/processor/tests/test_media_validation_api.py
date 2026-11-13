@@ -189,7 +189,7 @@ def test_transcription_ready_persists_media_and_transcript_metadata() -> None:
     add_job(db, "job-1", "user-1", "asset-1")
     result = db.execute(transcription_ready_sql(), transcription_ready_values()).fetchone()
     assert result is not None
-    assert result["status"] == "review"
+    assert result["status"] == "processing"
     row = db.execute(
         """
         SELECT stage, progress, media_container, audio_size_bytes,
