@@ -37,6 +37,7 @@ class AudioSecond:
     second: int
     rms_dbfs: float
     zero_crossing_rate: float
+    spectral_flux: float
 
 
 @dataclass(frozen=True)
@@ -75,7 +76,7 @@ def extract_audio_seconds(
     expected_sample_rate: int = 16000,
     max_duration_seconds: int = 43200,
 ) -> list[AudioSecond]:
-    """Read normalized mono PCM16 WAV and calculate one-second RMS/ZCR features."""
+    """Read normalized mono PCM16 WAV and calculate one-second RMS/ZCR/spectral-flux features."""
     if wav_path.is_symlink() or not wav_path.is_file():
         raise MomentDetectionError("audio_artifact_missing", "The normalized audio artifact is unavailable.")
     try:
@@ -96,6 +97,10 @@ def extract_audio_seconds(
                 raise MomentDetectionError("audio_duration_unsupported", "The audio duration is outside supported limits.")
             output: list[AudioSecond] = []
             second = 0
+            frame_size = 1024
+            hop_size = 512
+            window = np.hanning(frame_size).astype(np.float32)
+            previous_spectrum = np.zeros(frame_size // 2 + 1, dtype=np.float32)
             while True:
                 raw = source.readframes(frames_per_second)
                 if not raw:
@@ -108,7 +113,19 @@ def extract_audio_seconds(
                 rms = float(np.sqrt(np.mean(floating * floating, dtype=np.float64))) / 32768.0
                 dbfs = 20.0 * math.log10(max(rms, 1e-8))
                 zcr = float(np.count_nonzero(np.signbit(samples[1:]) != np.signbit(samples[:-1]))) / max(1, sample_count - 1)
-                output.append(AudioSecond(second, dbfs, zcr))
+                flux_values: list[float] = []
+                for offset in range(0, sample_count - frame_size + 1, hop_size):
+                    frame = samples[offset:offset + frame_size].astype(np.float32, copy=False) / 32768.0
+                    spectrum = np.abs(np.fft.rfft(frame * window)).astype(np.float32)
+                    spectrum_sum = float(np.sum(spectrum))
+                    if spectrum_sum > 1e-12:
+                        spectrum /= spectrum_sum
+                    else:
+                        spectrum.fill(0.0)
+                    flux_values.append(float(np.sum(np.maximum(spectrum - previous_spectrum, 0.0))))
+                    previous_spectrum = spectrum
+                spectral_flux = float(np.mean(flux_values)) if flux_values else 0.0
+                output.append(AudioSecond(second, dbfs, zcr, spectral_flux))
                 second += 1
             return output
     except (wave.Error, EOFError, OSError) as exc:
@@ -290,8 +307,8 @@ def detect_moments(
         novelty_by_second[second] += count / math.sqrt(1.0 + all_markers[marker])
     novelty_prefix = _prefix(novelty_by_second)
     # Use robust per-file baselines so a consistently loud game mix does not
-    # dominate. RMS catches level changes; ZCR adds a bounded texture/transient
-    # cue when sound character changes without a large volume increase.
+    # dominate. RMS catches level changes, ZCR catches texture changes, and
+    # spectral flux catches abrupt changes in the frequency distribution.
     energy = [item.rms_dbfs for item in audio]
     energy_baseline = statistics.median(energy)
     energy_mad = statistics.median(abs(value - energy_baseline) for value in energy) or 1.0
@@ -306,9 +323,16 @@ def detect_moments(
         max(0.0, min(1.0, (value - zcr_baseline - max(0.01, zcr_mad * 2.0)) / max(0.05, zcr_mad * 4.0)))
         for value in zero_crossings
     ]
+    flux_values = [item.spectral_flux for item in audio]
+    flux_baseline = statistics.median(flux_values)
+    flux_mad = statistics.median(abs(value - flux_baseline) for value in flux_values) or 0.001
+    flux_spikes = [
+        max(0.0, min(1.0, (value - flux_baseline - max(0.001, flux_mad * 2.0)) / max(0.01, flux_mad * 4.0)))
+        for value in flux_values
+    ]
     audio_spikes = [
-        0.75 * rms_spike + 0.25 * zcr_spike
-        for rms_spike, zcr_spike in zip(rms_spikes, zcr_spikes, strict=True)
+        0.55 * rms_spike + 0.20 * zcr_spike + 0.25 * flux_spike
+        for rms_spike, zcr_spike, flux_spike in zip(rms_spikes, zcr_spikes, flux_spikes, strict=True)
     ]
     spike_prefix = _prefix(audio_spikes)
 

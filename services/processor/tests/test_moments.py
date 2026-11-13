@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import wave
 from array import array
 from pathlib import Path
@@ -223,3 +224,26 @@ def test_short_speech_burst_scores_above_evenly_spread_speech(tmp_path: Path) ->
     assert max(item.transcript_velocity for item in clustered_result) > max(
         item.transcript_velocity for item in distributed_result
     )
+
+
+
+def test_spectral_flux_detects_a_new_sound_texture(tmp_path: Path) -> None:
+    audio = tmp_path / "spectral-flux.wav"
+    sample_rate = 16000
+    samples = array("h", [0] * sample_rate)
+    samples.extend(
+        int(10000 * math.sin(2.0 * math.pi * 440.0 * index / sample_rate))
+        for index in range(sample_rate)
+    )
+    samples.extend([0] * sample_rate)
+    with wave.open(str(audio), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(sample_rate)
+        output.writeframes(samples.tobytes())
+
+    features = extract_audio_seconds(audio)
+    assert len(features) == 3
+    assert features[0].spectral_flux == 0.0
+    assert features[1].spectral_flux > features[0].spectral_flux
+    assert features[2].spectral_flux == 0.0
