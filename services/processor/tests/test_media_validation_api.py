@@ -99,14 +99,17 @@ def test_source_download_query_rejects_expired_cancelled_or_nonready_assets() ->
     add_asset(db, "asset-1", "user-1")
     add_asset(db, "asset-2", "user-1")
     add_asset(db, "asset-3", "user-1")
+    add_asset(db, "friend-asset", "user-2")
     add_job(db, "expired", "user-1", "asset-1", lease_expiry="2000-01-01 00:00:00")
     add_job(db, "cancelled", "user-1", "asset-2", cancel_requested=1)
     add_job(db, "deleting", "user-1", "asset-3")
+    add_job(db, "wrong-owner", "user-1", "friend-asset")
     db.execute("UPDATE source_assets SET status = 'deleting' WHERE id = 'asset-3'")
     query = route_sql("/internal/processor/source-asset", "SELECT")
     assert db.execute(query, ("expired", "lease-1", "hash-1")).fetchone() is None
     assert db.execute(query, ("cancelled", "lease-1", "hash-1")).fetchone() is None
     assert db.execute(query, ("deleting", "lease-1", "hash-1")).fetchone() is None
+    assert db.execute(query, ("wrong-owner", "lease-1", "hash-1")).fetchone() is None
 
 
 def media_ready_sql() -> str:
@@ -149,11 +152,13 @@ def test_media_ready_callback_persists_validated_probe_and_audio_metadata() -> N
 
 def test_media_ready_callback_rejects_stale_expired_cancelled_and_wrong_asset() -> None:
     db = make_db()
-    add_asset(db, "asset-1", "user-1")
+    add_asset(db, "asset-stale", "user-1")
+    add_asset(db, "asset-expired", "user-1")
+    add_asset(db, "asset-cancelled", "user-1")
     add_asset(db, "friend-asset", "user-2")
-    add_job(db, "stale", "user-1", "asset-1", lease_id="new-lease")
-    add_job(db, "expired", "user-1", "asset-1", lease_expiry="2000-01-01 00:00:00")
-    add_job(db, "cancelled", "user-1", "asset-1", cancel_requested=1)
+    add_job(db, "stale", "user-1", "asset-stale", lease_id="new-lease")
+    add_job(db, "expired", "user-1", "asset-expired", lease_expiry="2000-01-01 00:00:00")
+    add_job(db, "cancelled", "user-1", "asset-cancelled", cancel_requested=1)
     add_job(db, "wrong-owner", "user-1", "friend-asset")
     sql = media_ready_sql()
 
