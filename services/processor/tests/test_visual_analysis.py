@@ -78,3 +78,36 @@ def test_focus_track_prefers_persistent_confident_subject() -> None:
 def test_object_detection_rejects_invalid_boxes(kwargs: dict[str, float]) -> None:
     with pytest.raises(ValueError):
         detection(1.0, **kwargs)
+
+
+def test_candidate_visual_sampler_extracts_motion_and_source_dimensions(tmp_path) -> None:
+    import cv2
+    import numpy as np
+
+    from clipforge_processor.visual_analysis import analyze_candidate_windows
+
+    video = tmp_path / "moving-scene.avi"
+    writer = cv2.VideoWriter(
+        str(video), cv2.VideoWriter_fourcc(*"MJPG"), 4.0, (320, 180)
+    )
+    if not writer.isOpened():
+        pytest.skip("OpenCV MJPG writer is unavailable in this environment")
+    try:
+        for index in range(24):
+            frame = np.zeros((180, 320, 3), dtype=np.uint8)
+            frame[:, :] = (20, 35, 55)
+            left = 10 + (index * 9) % 250
+            cv2.rectangle(frame, (left, 55), (left + 45, 115), (240, 220, 30), -1)
+            writer.write(frame)
+    finally:
+        writer.release()
+
+    evidence = analyze_candidate_windows(
+        video, [(1.0, 5.5, 0.9)], model_path=None, max_windows=1, max_samples=16
+    )[(1.0, 5.5)]
+
+    assert evidence.frame_width == 320
+    assert evidence.frame_height == 180
+    assert evidence.motion_salience > 0
+    assert evidence.visual_salience > 0
+    assert evidence.object_classes == ()
