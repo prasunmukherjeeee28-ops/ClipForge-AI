@@ -1,6 +1,6 @@
 # ClipForge Python Processor
 
-D1-backed single-job processor for private, creator-authorized VOD files. It verifies official YouTube/Twitch metadata, streams the attached private R2 source through a lease-scoped endpoint, validates media, extracts normalized audio, and creates a local timestamped speech transcript. It is not yet a clip generator.
+D1-backed single-job processor for private, creator-authorized VOD files. It verifies official YouTube/Twitch metadata, streams the attached private R2 source through a lease-scoped endpoint, validates media, extracts normalized audio, creates a local timestamped speech transcript, and builds an explainable shortlist of candidate moments from audio and transcript signals. It is not yet a clip generator.
 
 ## Current capabilities
 
@@ -14,6 +14,9 @@ D1-backed single-job processor for private, creator-authorized VOD files. It ver
 - Stores `audio.wav` and a `media.json` manifest in a private per-user/per-job scratch directory.
 - Runs CPU INT8 faster-whisper locally in bounded five-minute chunks, with voice-activity detection, word timestamps, and resumable per-chunk checkpoints.
 - Stores `transcript.json` and a verification summary in the same private per-user/per-job scratch directory. Transcript contents are not sent to Cloudflare or a third-party transcription API.
+- Computes one-second RMS loudness and zero-crossing features from the normalized WAV without loading the full audio into memory.
+- Scans multi-scale 15–90 second windows using transcript word density, reaction phrases, speech coverage, acoustic changes and within-VOD phrase rarity; overlapping candidates are deduplicated with temporal IoU non-maximum suppression.
+- Uses a provider-neutral Pydantic scoring contract. The current local adapter is deterministic and makes no LLM calls, invented category labels or title suggestions.
 - Reports media and transcript verification metadata to D1 and moves a successful job to `review` / `transcribed`.
 - Renews the 90-second lease every 25 seconds and stops work when cancellation or lease loss is detected.
 
@@ -57,7 +60,7 @@ Media-processing options:
 - `PROCESSOR_STT_LANGUAGE` (optional language code; empty means automatic detection)
 - `PROCESSOR_STT_CHUNK_TIMEOUT_SECONDS` (default 1800; allowed 60–3600)
 
-The source upload API caps input files at 2 GiB and source storage at 8 GiB per account. The processor caps normalized WAV output at 1.5 GB. FFmpeg is invoked with argument arrays, never through a shell, with a bounded timeout and thread count.
+The source upload API caps input files at 2 GiB and source storage at 8 GiB per account. The processor caps normalized WAV output at 1.5 GB. Moment analysis currently caps transcript JSON at 100 MB and emits at most 100 shortlisted candidates. FFmpeg is invoked with argument arrays, never through a shell, with a bounded timeout and thread count.
 
 ## Local setup
 
@@ -102,6 +105,7 @@ Do not run multiple copies of this one-job worker simultaneously. The worker han
 7. FFprobe validates the actual local file. FFmpeg extracts the first audio stream into mono 16 kHz PCM WAV.
 8. The processor writes `audio.wav` and `media.json` under `<scratch>/users/<user-uuid>/<job-uuid>/`, removes the temporary downloaded source, then runs local speech recognition in an isolated child process. Five-minute chunks are checkpointed atomically so an expired lease or process restart can resume completed chunks.
 9. The processor writes `transcript.json` with absolute segment and word timestamps, language metadata, and a SHA-256 digest. Only transcript verification metadata is sent to D1; audio and transcript text remain on private processor storage. The job moves to `review` / `transcribed`.
+10. The local moment-analysis module reads the retained WAV and transcript, calculates lightweight one-second audio features, scores overlapping multi-scale candidate windows, and applies IoU-based NMS. It writes no D1 rows or R2 objects yet; candidate persistence and UI review are the next integration step.
 
 Audio and transcript artifacts are not yet copied to R2. Keep processor volumes persistent and private until moment detection consumes them. Configure encryption-at-rest, backup and retention at the host/storage layer. Automated intermediate-artifact cleanup is a later task.
 
@@ -121,10 +125,11 @@ Each request uses a fresh random nonce. The Worker stores only its SHA-256 hash 
 
 ## Next implementation steps
 
-1. Add candidate-window generation and provider-independent AI moment scoring. Gemini will review the moment-detection design.
-2. Add FFmpeg 9:16 rendering, subtitle burn-in, private clip storage and idempotent clip registration.
-3. Move intermediate audio and transcripts to lifecycle-managed private R2 storage and add automated retention/cleanup.
-4. Connect the remaining dashboard, library, editor and job-progress screens to real API data.
-5. Add live-stream processing after the VOD pipeline is stable.
+1. Persist owner-scoped moment candidates in D1, connect candidate progress to the job lifecycle, and add review UI/API integration.
+2. Add optional provider adapters for semantic payoff verification only after local heuristic quality is measured; benchmark acoustic event detection before adding a model such as YAMNet.
+3. Add FFmpeg 9:16 rendering, subtitle burn-in, private clip storage and idempotent clip registration.
+4. Move intermediate audio, transcripts and candidate artifacts to lifecycle-managed private R2 storage and add automated retention/cleanup.
+5. Connect the remaining dashboard, library, editor and job-progress screens to real API data.
+6. Add live-stream processing after the VOD pipeline is stable.
 
 The code and tests do not prove that a live Cloudflare account, R2 bucket or production processor host is configured correctly. No Cloudflare resources are created or deployed by these changes.
