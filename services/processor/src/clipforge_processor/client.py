@@ -371,11 +371,22 @@ class ProcessorClient:
             raise
 
     async def render_upload_init(
-        self, clip_id: str, lease_id: str, lease_token: str, size_bytes: int
+        self,
+        clip_id: str,
+        lease_id: str,
+        lease_token: str,
+        size_bytes: int,
+        sha256: str,
     ) -> dict[str, Any]:
         return await self.post(
             "/internal/processor/render-upload-init",
-            {"clipId": clip_id, "leaseId": lease_id, "leaseToken": lease_token, "sizeBytes": size_bytes},
+            {
+                "clipId": clip_id,
+                "leaseId": lease_id,
+                "leaseToken": lease_token,
+                "sizeBytes": size_bytes,
+                "sha256": sha256,
+            },
         )
 
     async def upload_render_part(
