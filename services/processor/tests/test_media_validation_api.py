@@ -340,16 +340,10 @@ def test_candidate_list_query_is_scoped_to_authenticated_owner() -> None:
     )
     query = None
     for line in API_SOURCE.splitlines():
-        match = re.search(r'^\s+"(SELECT candidates.id, candidates.start_seconds AS startSeconds.*FROM candidates.*)",\s*, line)
-        if match:
-            query = match.group(1)
-            break
-    assert query is not None
-    own = db.execute(query, ("job-1", "user-1")).fetchall()
-    wrong_owner = db.execute(query, ("job-2", "user-1")).fetchall()
-    assert [row["id"] for row in own] == ["own"]
-    assert wrong_owner == []
-, line)
+        match = re.search(
+            r'^\s+"(SELECT candidates.id, candidates.start_seconds AS startSeconds.*FROM candidates.*)",\s*$',
+            line,
+        )
         if match:
             query = match.group(1)
             break
