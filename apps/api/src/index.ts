@@ -620,7 +620,7 @@ app.post("/internal/processor/render-upload-part/:clipId/:partNumber", async (c)
   }
   const tokenHash = await sha256Hex(metadata.leaseToken);
   const clip = await c.env.DB.prepare(
-    "SELECT output_key AS outputKey, upload_id AS uploadId, upload_size_bytes AS uploadSizeBytes FROM clips WHERE id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'rendering' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP AND upload_id IS NOT NULL",
+    "SELECT output_key AS outputKey, upload_id AS uploadId, upload_size_bytes AS uploadSizeBytes, output_sha256 AS outputSha256 FROM clips WHERE id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'rendering' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP AND upload_id IS NOT NULL",
   ).bind(clipId, metadata.leaseId, tokenHash).first<{
     outputKey: string; uploadId: string; uploadSizeBytes: number;
   }>();
@@ -666,7 +666,7 @@ app.post("/internal/processor/render-complete", async (c) => {
   const clip = await c.env.DB.prepare(
     "SELECT output_key AS outputKey, upload_id AS uploadId, upload_size_bytes AS uploadSizeBytes FROM clips WHERE id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'rendering' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP AND upload_id IS NOT NULL",
   ).bind(body.clipId, body.leaseId, tokenHash).first<{
-    outputKey: string; uploadId: string; uploadSizeBytes: number;
+    outputKey: string; uploadId: string; uploadSizeBytes: number; outputSha256: string;
   }>();
   if (!clip) return jsonError(c, "Render lease is invalid or expired.", 409);
 
@@ -692,9 +692,13 @@ app.post("/internal/processor/render-complete", async (c) => {
     if (!existingObject) return jsonError(c, "R2 could not finalize the rendered MP4. Retry completion.", 409);
     stored = existingObject;
   }
-  if (stored.size !== clip.uploadSizeBytes) {
+  if (
+    stored.size !== clip.uploadSizeBytes ||
+    !clip.outputSha256 ||
+    stored.customMetadata?.sha256 !== clip.outputSha256
+  ) {
     await c.env.MEDIA.delete(clip.outputKey);
-    return jsonError(c, "Stored MP4 size did not match the verified render size.", 409);
+    return jsonError(c, "Stored MP4 size or output digest did not match the verified render.", 409);
   }
   const finished = await c.env.DB.prepare(
     "UPDATE clips SET status = 'ready', progress = 100, output_size_bytes = ?1, upload_id = NULL, completed_at = CURRENT_TIMESTAMP, lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, error_code = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?2 AND lease_id = ?3 AND lease_token_hash = ?4 AND status = 'rendering' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP",
@@ -1224,8 +1228,8 @@ app.post("/api/candidates/:candidateId/render", async (c) => {
   }>();
   if (!candidate) return jsonError(c, "Select a candidate from your own completed analysis before rendering.", 409);
   const existing = await c.env.DB.prepare(
-    "SELECT id, status, progress FROM clips WHERE candidate_id = ?1 AND user_id = ?2",
-  ).bind(candidateId, userId).first<{ id: string; status: string; progress: number }>();
+    "SELECT id, job_id AS jobId, candidate_id AS candidateId, title, description, duration_seconds AS durationSeconds, aspect_ratio AS aspectRatio, status, progress, error_code AS errorCode, output_size_bytes AS outputSizeBytes, created_at AS createdAt, completed_at AS completedAt FROM clips WHERE candidate_id = ?1 AND user_id = ?2",
+  ).bind(candidateId, userId).first();
   if (existing) return c.json({ clip: existing }, 200);
 
   const id = uuid();
