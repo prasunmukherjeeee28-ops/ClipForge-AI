@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -56,13 +57,14 @@ class ProcessorClient:
     async def close(self) -> None:
         await self._http.aclose()
 
-    async def post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def post(self, path: str, payload: dict[str, Any], *, timeout: float | None = None) -> dict[str, Any]:
         body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         headers = signed_headers(self._secret, "POST", path, body)
         response = await self._http.post(
             f"{self._base_url}{path}",
             content=body,
             headers=headers,
+            timeout=timeout,
         )
         response.raise_for_status()
         return response.json()
@@ -283,6 +285,82 @@ class ProcessorClient:
                 "transcriptSizeBytes": transcript_size_bytes,
                 "transcriptSha256": transcript_sha256,
                 "candidates": candidates,
+            },
+        )
+
+
+    async def begin_clip_upload(
+        self,
+        job_id: str,
+        lease_id: str,
+        lease_token: str,
+        *,
+        start_seconds: float,
+        end_seconds: float,
+        title: str,
+        size_bytes: int,
+    ) -> dict[str, Any]:
+        return await self.post(
+            "/internal/processor/clip-uploads",
+            {
+                "jobId": job_id,
+                "leaseId": lease_id,
+                "leaseToken": lease_token,
+                "startSeconds": start_seconds,
+                "endSeconds": end_seconds,
+                "title": title,
+                "sizeBytes": size_bytes,
+            },
+            timeout=120,
+        )
+
+    async def upload_clip_part(
+        self,
+        job_id: str,
+        lease_id: str,
+        lease_token: str,
+        clip_upload_id: str,
+        part_number: int,
+        data: bytes,
+    ) -> dict[str, Any]:
+        return await self.post(
+            f"/internal/processor/clip-uploads/{clip_upload_id}/parts/{part_number}",
+            {
+                "jobId": job_id,
+                "leaseId": lease_id,
+                "leaseToken": lease_token,
+                "data": base64.b64encode(data).decode("ascii"),
+            },
+            timeout=120,
+        )
+
+    async def complete_clip_upload(
+        self,
+        job_id: str,
+        lease_id: str,
+        lease_token: str,
+        clip_upload_id: str,
+    ) -> dict[str, Any]:
+        return await self.post(
+            f"/internal/processor/clip-uploads/{clip_upload_id}/complete",
+            {"jobId": job_id, "leaseId": lease_id, "leaseToken": lease_token},
+            timeout=120,
+        )
+
+    async def report_clips_ready(
+        self,
+        job_id: str,
+        lease_id: str,
+        lease_token: str,
+        clip_ids: list[str],
+    ) -> dict[str, Any]:
+        return await self.post(
+            "/internal/processor/clips-ready",
+            {
+                "jobId": job_id,
+                "leaseId": lease_id,
+                "leaseToken": lease_token,
+                "clipIds": clip_ids,
             },
         )
 

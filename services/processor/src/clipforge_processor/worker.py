@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import threading
 import uuid
 from pathlib import Path
 from typing import Awaitable, TypeVar
@@ -11,10 +12,66 @@ from .client import ProcessorClient
 from .config import Settings
 from .media import MediaProcessingError, extract_audio, probe_media
 from .moments import detect_moments
+from .render import render_vertical_clip
 from .source_adapters import SourceInspectionError, inspect_video_url
 from .transcription_runner import run_transcription_process
 
 T = TypeVar("T")
+
+
+def _select_render_candidates(candidates: list[dict[str, object]], limit: int = 3) -> list[dict[str, object]]:
+    ranked = sorted(
+        (item for item in candidates
+         if isinstance(item.get("startSeconds"), (int, float))
+         and isinstance(item.get("endSeconds"), (int, float))
+         and isinstance(item.get("score"), (int, float))
+         and 5 <= float(item["endSeconds"]) - float(item["startSeconds"]) <= 120),
+        key=lambda item: (-float(item["score"]), float(item["startSeconds"])),
+    )
+    selected: list[dict[str, object]] = []
+    for candidate in ranked:
+        start = float(candidate["startSeconds"])
+        end = float(candidate["endSeconds"])
+        overlaps = any(
+            max(0.0, min(end, float(item["endSeconds"])) - max(start, float(item["startSeconds"])))
+            / (max(end, float(item["endSeconds"])) - min(start, float(item["startSeconds"]))) > 0.45
+            for item in selected
+        )
+        if not overlaps:
+            selected.append(candidate)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def _clip_title(transcript_path: Path, start_seconds: float, end_seconds: float, index: int) -> str:
+    try:
+        payload = json.loads(transcript_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        payload = {}
+    segments = payload.get("segments") if isinstance(payload, dict) else None
+    snippets: list[str] = []
+    if isinstance(segments, list):
+        for segment in segments:
+            if not isinstance(segment, dict) or not isinstance(segment.get("text"), str):
+                continue
+            try:
+                start = float(segment.get("start"))
+                end = float(segment.get("end"))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if end > start_seconds and start < end_seconds:
+                cleaned = " ".join(segment["text"].split())
+                if cleaned:
+                    snippets.append(cleaned)
+            if len(" ".join(snippets)) >= 100:
+                break
+    excerpt = re.sub(r"[\x00-\x1f\x7f]", " ", " ".join(snippets)).strip()
+    excerpt = " ".join(excerpt.split())
+    if excerpt:
+        sentence = re.split(r"(?<=[.!?])\s+", excerpt, maxsplit=1)[0]
+        return sentence[:116].rstrip(" .!?") or f"Highlight {index}"
+    return f"Gameplay highlight {index}"
 
 
 class JobCancelled(Exception):
@@ -244,7 +301,6 @@ async def run_once() -> int:
                 lease_lost,
             )
             _write_manifest(job_dir, job_id, user_id, source_asset_id, probe, audio_size)
-            source_path.unlink(missing_ok=True)
 
             await _with_lease(
                 client.report_progress(job_id, lease_id, lease_token, "transcribing_audio", 35),
@@ -286,13 +342,20 @@ async def run_once() -> int:
                 cancelled,
                 lease_lost,
             )
-            candidate_payload = [candidate.as_dict() for candidate in candidates]
+            candidate_payload = []
+            for candidate in candidates:
+                item = candidate.as_dict()
+                item["candidateId"] = str(uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"clipforge:{job_id}:{item['startSeconds']:.3f}:{item['endSeconds']:.3f}",
+                ))
+                candidate_payload.append(item)
             await _with_lease(
                 client.report_progress(job_id, lease_id, lease_token, "persisting_moments", 68),
                 cancelled,
                 lease_lost,
             )
-            result = await _with_lease(
+            await _with_lease(
                 client.report_transcription_ready(
                     job_id, lease_id, lease_token,
                     container=probe.container,
@@ -312,9 +375,101 @@ async def run_once() -> int:
                 cancelled,
                 lease_lost,
             )
-            # The manifest and audio.wav are retained for the next processor stage.
+
+            selected = _select_render_candidates(candidate_payload, limit=3)
+            clip_ids: list[str] = []
+            clips_dir = job_dir / "clips"
+            clips_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            clips_dir.chmod(0o700)
+
+            for index, candidate in enumerate(selected, start=1):
+                start_seconds = float(candidate["startSeconds"])
+                end_seconds = float(candidate["endSeconds"])
+                title = _clip_title(Path(transcription["path"]), start_seconds, end_seconds, index)
+                output_path = clips_dir / f"clip-{index:02d}.mp4"
+                await _with_lease(
+                    client.report_progress(
+                        job_id, lease_id, lease_token, "rendering_clips",
+                        72 + round(10 * (index - 1) / max(1, len(selected))),
+                    ),
+                    cancelled,
+                    lease_lost,
+                )
+                render_cancel = threading.Event()
+                try:
+                    rendered = await _with_lease(
+                        asyncio.to_thread(
+                            render_vertical_clip,
+                            source_path,
+                            Path(transcription["path"]),
+                            output_path,
+                            start_seconds=start_seconds,
+                            end_seconds=end_seconds,
+                            ffmpeg_binary=settings.ffmpeg_binary,
+                            timeout_seconds=min(settings.ffmpeg_timeout_seconds, 3600),
+                            max_output_bytes=500_000_000,
+                            threads=settings.ffmpeg_threads,
+                            cancel_event=render_cancel,
+                        ),
+                        cancelled,
+                        lease_lost,
+                    )
+                except BaseException:
+                    render_cancel.set()
+                    raise
+
+                upload = await _with_lease(
+                    client.begin_clip_upload(
+                        job_id, lease_id, lease_token,
+                        start_seconds=start_seconds,
+                        end_seconds=end_seconds,
+                        title=title,
+                        size_bytes=rendered.size_bytes,
+                    ),
+                    cancelled,
+                    lease_lost,
+                )
+                clip_upload_id = upload.get("clipUploadId")
+                upload_part_size = upload.get("partSizeBytes")
+                upload_part_count = upload.get("partCount")
+                if not isinstance(clip_upload_id, str) or not isinstance(upload_part_size, int) or not isinstance(upload_part_count, int):
+                    raise RuntimeError("clip_upload_initialization_invalid")
+                if upload.get("stored") is not True:
+                    if upload_part_size < 5 * 1024 * 1024 or upload_part_size > 8 * 1024 * 1024:
+                        raise RuntimeError("clip_upload_part_size_invalid")
+                    with output_path.open("rb") as clip_file:
+                        for part_number in range(1, upload_part_count + 1):
+                            chunk = await asyncio.to_thread(clip_file.read, upload_part_size)
+                            if not chunk:
+                                raise RuntimeError("clip_upload_part_missing")
+                            await _with_lease(
+                                client.upload_clip_part(
+                                    job_id, lease_id, lease_token, clip_upload_id, part_number, chunk
+                                ),
+                                cancelled,
+                                lease_lost,
+                            )
+                    await _with_lease(
+                        client.complete_clip_upload(job_id, lease_id, lease_token, clip_upload_id),
+                        cancelled,
+                        lease_lost,
+                    )
+                clip_ids.append(clip_upload_id)
+                output_path.unlink(missing_ok=True)
+
+            await _with_lease(
+                client.report_progress(job_id, lease_id, lease_token, "finalizing_clips", 96),
+                cancelled,
+                lease_lost,
+            )
+            result = await _with_lease(
+                client.report_clips_ready(job_id, lease_id, lease_token, clip_ids),
+                cancelled,
+                lease_lost,
+            )
+            source_path.unlink(missing_ok=True)
             print(
-                "Media preparation finished:",
+                "Clip generation finished:",
                 json.dumps(
                     {
                         "jobId": job_id,
@@ -322,11 +477,10 @@ async def run_once() -> int:
                         "durationSeconds": probe.duration_seconds,
                         "resolution": f"{probe.width}x{probe.height}",
                         "audioBytes": audio_size,
-                        "audioPath": str(audio_path),
-                        "transcriptPath": transcription["path"],
                         "transcriptSegments": transcription["segment_count"],
-                        "transcriptLanguage": transcription["language"],
-                        "outcome": "transcribed",
+                        "candidateCount": len(candidate_payload),
+                        "clipCount": len(clip_ids),
+                        "outcome": "completed",
                         "result": result,
                     },
                     ensure_ascii=False,

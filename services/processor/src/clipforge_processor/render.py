@@ -5,6 +5,8 @@ import math
 import re
 import subprocess
 import tempfile
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -117,6 +119,7 @@ def render_vertical_clip(
     timeout_seconds: float = 900,
     max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
     threads: int = 2,
+    cancel_event: threading.Event | None = None,
 ) -> RenderedClip:
     """Render a bounded 1080x1920 MP4 with full-frame gameplay and synchronized captions.
 
@@ -176,13 +179,41 @@ def render_vertical_clip(
             "-fs", str(max_output_bytes), str(partial_output),
         ]
         try:
-            result = subprocess.run(
-                command,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-            )
+            if cancel_event is None:
+                result = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_seconds,
+                )
+            else:
+                process = subprocess.Popen(
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                deadline = time.monotonic() + timeout_seconds
+                while process.poll() is None:
+                    if cancel_event.is_set():
+                        process.terminate()
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait()
+                        raise ClipRenderError("render_cancelled", "Clip rendering was cancelled.")
+                    if time.monotonic() >= deadline:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait()
+                        raise ClipRenderError("render_timeout", "Clip rendering exceeded its time limit.")
+                    time.sleep(0.2)
+                result = subprocess.CompletedProcess(command, process.returncode, "", "")
         except subprocess.TimeoutExpired as exc:
             raise ClipRenderError("render_timeout", "Clip rendering exceeded its time limit.") from exc
         except OSError as exc:

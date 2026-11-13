@@ -29,6 +29,7 @@ def make_db() -> sqlite3.Connection:
         "0006_media_validation.sql",
         "0007_transcription.sql",
         "0008_moment_candidates.sql",
+        "0009_private_clip_storage.sql",
     ):
         db.executescript((ROOT / "database/migrations" / migration).read_text())
     db.executemany(
@@ -188,7 +189,7 @@ def test_transcription_ready_persists_media_and_transcript_metadata() -> None:
     add_job(db, "job-1", "user-1", "asset-1")
     result = db.execute(transcription_ready_sql(), transcription_ready_values()).fetchone()
     assert result is not None
-    assert result["status"] == "review"
+    assert result["status"] == "processing"
     row = db.execute(
         """
         SELECT stage, progress, media_container, audio_size_bytes,
@@ -198,8 +199,8 @@ def test_transcription_ready_persists_media_and_transcript_metadata() -> None:
         """
     ).fetchone()
     assert tuple(row) == (
-        "moments_ready", 70, "mov,mp4,m4a", 4_000_044,
-        "base", "en", 42, 12_345, "a" * 64, None,
+        "rendering_clips", 72, "mov,mp4,m4a", 4_000_044,
+        "base", "en", 42, 12_345, "a" * 64, "lease-1",
     )
 
 
@@ -237,6 +238,7 @@ def test_moment_candidates_are_persisted_only_for_the_active_owner_lease() -> No
     add_job(db, "friend-job", "user-2", "friend-asset")
     sql = moment_candidate_insert_sql()
     payload = json.dumps([{
+        "candidateId": "00000000-0000-4000-8000-000000000001",
         "startSeconds": 12.0,
         "endSeconds": 42.0,
         "score": 0.82,

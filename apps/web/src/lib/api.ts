@@ -150,3 +150,47 @@ export async function getJobMomentCandidates(jobId: string): Promise<MomentCandi
   );
   return result.candidates ?? [];
 }
+
+
+export interface ClipRecord {
+  id: string;
+  jobId: string;
+  title: string;
+  description: string | null;
+  hashtagsJson: string | null;
+  durationSeconds: number;
+  aspectRatio: "9:16";
+  sizeBytes: number;
+  createdAt: string;
+}
+
+export interface JobRecord {
+  id: string;
+  sourceUrl: string;
+  sourcePlatform: "youtube" | "twitch";
+  title: string | null;
+  status: "queued" | "processing" | "review" | "completed" | "failed" | "cancelled";
+  progress: number;
+  stage: string;
+  errorCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function getClips(): Promise<ClipRecord[]> {
+  const result = await request<{ clips: ClipRecord[] }>("/api/clips");
+  return result.clips ?? [];
+}
+
+export async function getJobs(): Promise<JobRecord[]> {
+  const result = await request<{ jobs: JobRecord[] }>("/api/jobs?limit=50");
+  return result.jobs ?? [];
+}
+
+export function getClipPreviewUrl(clipId: string): string {
+  return `${API_BASE}/api/clips/${encodeURIComponent(clipId)}/preview`;
+}
+
+export function getClipDownloadUrl(clipId: string): string {
+  return `${API_BASE}/api/clips/${encodeURIComponent(clipId)}/download`;
+}
