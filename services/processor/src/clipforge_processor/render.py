@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .tracking import FaceObservation, TrackingError, detect_faces, smooth_camera_path
+
 
 MAX_TRANSCRIPT_BYTES = 100_000_000
 MAX_TRANSCRIPT_SEGMENTS = 500_000
@@ -108,6 +110,74 @@ def _filter_path(path: Path) -> str:
     return value
 
 
+
+def _camera_axis_expression(points: list[Any], axis: str, maximum: float) -> str:
+    values = [(point.time_seconds, point.center_x if axis == "x" else point.center_y) for point in points]
+    if not values:
+        return "0"
+    expression = f"{min(max(values[-1][1], 0.0), maximum):.2f}"
+    for index in range(len(values) - 2, -1, -1):
+        left_time, left_value = values[index]
+        right_time, right_value = values[index + 1]
+        span = max(0.001, right_time - left_time)
+        interpolated = (
+            f"({left_value:.2f}+({right_value - left_value:.2f})*"
+            f"(t-{left_time:.3f})/{span:.3f})"
+        )
+        expression = f"if(lt(t,{right_time:.3f}),{interpolated},{expression})"
+    first_time, first_value = values[0]
+    return f"if(lt(t,{first_time:.3f}),{first_value:.2f},{expression})"
+
+
+def _tracked_subject_filter(
+    frame_width: int,
+    frame_height: int,
+    observations: list[Any] | tuple[Any, ...],
+    *,
+    clip_start: float,
+    clip_end: float,
+) -> str | None:
+    if not observations or frame_width < 1 or frame_height < 1:
+        return None
+    crop_width = min(frame_width, round(frame_height * 9 / 16))
+    crop_height = min(frame_height, round(frame_width * 16 / 9))
+    if crop_width < 2 or crop_height < 2:
+        return None
+    try:
+        normalized = [
+            FaceObservation(
+                time_seconds=float(item.time_seconds),
+                x=float(item.x),
+                y=float(item.y),
+                width=float(item.width),
+                height=float(item.height),
+                confidence=float(getattr(item, "confidence", 1.0)),
+            )
+            for item in observations
+        ]
+        points = smooth_camera_path(
+            normalized,
+            frame_width=frame_width,
+            frame_height=frame_height,
+            clip_start=clip_start,
+            clip_end=clip_end,
+            crop_width=crop_width,
+            crop_height=crop_height,
+            smoothing=0.35,
+        )
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not points:
+        return None
+    x_expression = _camera_axis_expression(points, "x", frame_width - crop_width)
+    y_expression = _camera_axis_expression(points, "y", frame_height - crop_height)
+    return (
+        f"crop={crop_width}:{crop_height}:"
+        f"x='{x_expression}':y='{y_expression}',"
+        "scale=1080:1920:flags=bilinear"
+    )
+
+
 def render_vertical_clip(
     source_path: Path,
     transcript_path: Path,
@@ -120,6 +190,9 @@ def render_vertical_clip(
     max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
     threads: int = 2,
     cancel_event: threading.Event | None = None,
+    subject_observations: list[Any] | tuple[Any, ...] | None = None,
+    subject_frame_width: int | None = None,
+    subject_frame_height: int | None = None,
 ) -> RenderedClip:
     """Render a bounded 1080x1920 MP4 with full-frame gameplay and synchronized captions.
 
@@ -158,13 +231,41 @@ def render_vertical_clip(
             f"subtitles=filename='{_filter_path(captions_path)}':"
             "force_style='FontName=Arial,FontSize=18,Outline=2,Shadow=1,Alignment=2,MarginV=180'"
         )
-        filter_complex = (
-            "[0:v]split=2[background][foreground];"
-            "[background]scale=1080:1920:force_original_aspect_ratio=increase,"
-            "crop=1080:1920,boxblur=24:12[bg];"
-            "[foreground]scale=1080:1920:force_original_aspect_ratio=decrease[fg];"
-            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,fps=30,{subtitles_filter}[v]"
+        tracked_observations: list[Any] | tuple[Any, ...] = subject_observations or ()
+        frame_width = int(subject_frame_width or 0)
+        frame_height = int(subject_frame_height or 0)
+        try:
+            detected_width, detected_height, face_observations = detect_faces(
+                source_path,
+                start_seconds=start_seconds,
+                end_seconds=end_seconds,
+                sample_interval_seconds=0.5,
+                max_samples=120,
+            )
+            frame_width, frame_height = detected_width, detected_height
+            if face_observations:
+                tracked_observations = face_observations
+        except (TrackingError, ValueError, OSError):
+            pass
+        tracked_filter = _tracked_subject_filter(
+            frame_width,
+            frame_height,
+            tracked_observations,
+            clip_start=start_seconds,
+            clip_end=end_seconds,
         )
+        if tracked_filter:
+            filter_complex = (
+                f"[0:v]{tracked_filter},setsar=1,fps=30,{subtitles_filter}[v]"
+            )
+        else:
+            filter_complex = (
+                "[0:v]split=2[background][foreground];"
+                "[background]scale=1080:1920:force_original_aspect_ratio=increase,"
+                "crop=1080:1920,boxblur=24:12[bg];"
+                "[foreground]scale=1080:1920:force_original_aspect_ratio=decrease[fg];"
+                f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,fps=30,{subtitles_filter}[v]"
+            )
         command = [
             ffmpeg_binary, "-hide_banner", "-nostdin", "-y",
             "-i", str(source_path),
