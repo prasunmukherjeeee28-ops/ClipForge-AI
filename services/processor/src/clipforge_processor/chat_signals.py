@@ -112,17 +112,20 @@ def score_chat_reactions(
 
     baseline = statistics.median(counts) if counts else 0.0
     results: list[ChatReactionWindow] = []
-    for index, bucket in enumerate(buckets):
+    left = 0
+    right = 0
+    for index in range(window_count):
         start = float(index * step_seconds)
         end = min(duration_seconds, start + window_seconds)
-        if end - start < window_seconds * 0.5 or not bucket:
+        if end - start < window_seconds * 0.5:
             continue
-
-        in_window = [
-            (author, text)
-            for timestamp, author, text in accepted
-            if start <= timestamp < end
-        ]
+        while right < len(accepted) and accepted[right][0] < end:
+            right += 1
+        while left < right and accepted[left][0] < start:
+            left += 1
+        if left >= right:
+            continue
+        in_window = [(author, text) for _, author, text in accepted[left:right]]
         message_count = len(in_window)
         unique_authors = len({author for author, _ in in_window})
         if message_count < min_messages or unique_authors < min_unique_authors:
