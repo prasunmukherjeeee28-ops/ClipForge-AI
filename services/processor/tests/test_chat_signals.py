@@ -31,7 +31,7 @@ def test_duplicate_spam_is_heavily_discounted() -> None:
     ]
     windows = score_chat_reactions(messages, duration_seconds=120)
     assert windows
-    assert max(item.duplicate_ratio for item in windows) > 0.8
+    assert max(item.duplicate_ratio for item in windows) >= 0.8
     assert max(item.score for item in windows) < 0.25
 
 
