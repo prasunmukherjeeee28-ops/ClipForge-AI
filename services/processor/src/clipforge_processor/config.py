@@ -34,6 +34,7 @@ class Settings:
     semantic_api_key: str | None = None
     semantic_model: str = "gemini-3.8-flash"
     semantic_timeout_seconds: float = 25.0
+    object_detector_model_path: str | None = None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -97,6 +98,9 @@ class Settings:
         stt_language = os.environ.get("PROCESSOR_STT_LANGUAGE", "").strip().lower() or None
         if stt_language is not None and not re.fullmatch(r"[a-z]{2,3}(?:-[a-z0-9]{2,8})?", stt_language):
             raise ValueError("PROCESSOR_STT_LANGUAGE must be a valid language code")
+        object_model_path = os.environ.get("PROCESSOR_OBJECT_DETECTOR_MODEL_PATH", "").strip() or None
+        if object_model_path is not None and (len(object_model_path) > 1024 or "\x00" in object_model_path):
+            raise ValueError("PROCESSOR_OBJECT_DETECTOR_MODEL_PATH is invalid")
 
         return cls(
             api_base_url=base_url,
@@ -125,4 +129,5 @@ class Settings:
             semantic_api_key=os.environ.get("GEMINI_API_KEY") or None,
             semantic_model=os.environ.get("PROCESSOR_SEMANTIC_MODEL", "gemini-3.8-flash").strip(),
             semantic_timeout_seconds=bounded_float("PROCESSOR_SEMANTIC_TIMEOUT_SECONDS", 25.0, 2.0, 60.0),
+            object_detector_model_path=object_model_path,
         )
