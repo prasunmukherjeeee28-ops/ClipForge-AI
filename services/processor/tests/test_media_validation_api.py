@@ -10,8 +10,8 @@ API_SOURCE = (ROOT / "apps/api/src/index.ts").read_text(encoding="utf-8")
 
 def route_sql(route: str, prefix: str) -> str:
     marker = f'app.post("{route}"'
-    section = API_SOURCE.split(marker, 1)[1].split("\\napp.post(", 1)[0]
-    match = re.search(r'^\\s+"(' + re.escape(prefix) + r' [^"]+)",\\s*$', section, re.MULTILINE)
+    section = API_SOURCE.split(marker, 1)[1].split("\napp.post(", 1)[0]
+    match = re.search(r'^\s+"(' + re.escape(prefix) + r' [^"]+)",\s*$', section, re.MULTILINE)
     assert match, f"Could not find production {prefix} SQL for {route}"
     return match.group(1)
 
@@ -111,8 +111,8 @@ def test_source_download_query_rejects_expired_cancelled_or_nonready_assets() ->
 
 def media_ready_sql() -> str:
     marker = 'app.post("/internal/processor/media-ready"'
-    section = API_SOURCE.split(marker, 1)[1].split("\\napp.post(", 1)[0]
-    match = re.search(r'^\\s+"(UPDATE jobs SET [^"]+)",\\s*$', section, re.MULTILINE)
+    section = API_SOURCE.split(marker, 1)[1].split("\napp.post(", 1)[0]
+    match = re.search(r'^\s+"(UPDATE jobs SET [^"]+)",\s*$', section, re.MULTILINE)
     assert match, "Could not find production media-ready UPDATE SQL"
     return match.group(1)
 
