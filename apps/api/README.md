@@ -2,60 +2,74 @@
 
 Cloudflare Worker API for the private two-account ClipForge workspace.
 
-## Implemented foundation
-- Cloudflare Access JWT verification (signature, issuer and audience).
-- Explicit allowlist for exactly two configured email addresses.
-- D1 user provisioning from verified Access identities.
-- User-scoped URL job creation, listing, status and cancellation.
-- Bulk URL submission (up to 20 unique YouTube/Twitch URLs per request).
-- D1-backed processor job claiming with expiring leases and attempt limits.
-- HMAC-authenticated, replay-protected processor ping, claim, heartbeat, progress, release and failure endpoints.
-- Cancellation requests remain visible to an active processor through heartbeat responses.
-- Private R2 binding reserved for subsequent media upload/export routes.
+## Runtime responsibilities
 
-D1 is the single source of truth for dispatch. There is no Cloudflare Queue producer in this polling architecture. The API does not download arbitrary URLs; source type stays `unknown` until a supported, authorized source adapter detects live versus VOD.
+- Cloudflare Access JWT verification, issuer/audience validation and an explicit two-email allowlist.
+- D1-backed user provisioning, job state, source metadata, upload parts, processor leases, candidates and clip records.
+- Owner-scoped multipart uploads of creator-authorized source files to private R2.
+- Atomic processor job claiming from D1; D1 is the only dispatch source (no Cloudflare Queue).
+- HMAC-SHA256 authenticated processor endpoints with a five-minute timestamp window and one-use nonce.
+- Lease-checked source streaming from private R2 to the processor.
+- Lease-bound moment persistence, clip multipart upload, R2 object-size verification and D1 clip registration.
+- Owner-scoped clip listing, preview and download. R2 objects are not public.
+
+The API never downloads submitted YouTube/Twitch pages or extracts platform playback URLs. A URL is used for official metadata inspection only. The user must provide an original/export or other provider-approved media file they are authorized to process.
+
+## User-facing endpoints
+
+- `GET /health` — unauthenticated API health.
+- `GET /api/me` — authenticated account identity.
+- `POST /api/jobs` — submit one or more supported source URLs (up to 20 unique URLs per request).
+- `GET /api/jobs` — list only the current user's jobs.
+- `GET /api/jobs/:jobId` — read one owned job.
+- `POST /api/jobs/:jobId/cancel` — request cancellation of one owned job.
+- `POST /api/jobs/cancel-all` — request cancellation of the current user's active jobs.
+- `POST /api/source-assets` and its upload/complete routes — create, upload and finalize an owner-scoped source asset.
+- `POST /api/jobs/:jobId/source-asset` — attach a ready source asset owned by the same user to the job.
+- `GET /api/jobs/:jobId/moments` — list moment candidates for one owned job.
+- `GET /api/clips` — list only the current user's finished clips.
+- `GET /api/clips/:clipId/preview` — stream an owned private clip with byte-range support.
+- `GET /api/clips/:clipId/download` — download an owned private MP4.
 
 ## Processor API contract
 
 All `/internal/processor/*` routes require:
+
 - `X-Processor-Timestamp`: Unix seconds, within five minutes of Worker time.
-- `X-Processor-Nonce`: unique 32-character hexadecimal nonce per request.
-- `X-Processor-Signature`: lowercase/uppercase hex HMAC-SHA256 of the canonical bytes:
-  `timestamp + "\n" + lowercase_nonce + "\n" + HTTP method + "\n" + URL pathname + "\n" + exact raw request body`.
-- The Worker hashes and stores each nonce once, rejecting replayed signed requests.
-- HMAC key: the Worker secret `PROCESSOR_SHARED_SECRET`.
+- `X-Processor-Nonce`: a fresh 32-character hexadecimal nonce per request.
+- `X-Processor-Signature`: HMAC-SHA256 over the exact canonical request bytes:
+  `timestamp + "\\n" + lowercase_nonce + "\\n" + HTTP method + "\\n" + URL pathname + "\\n" + exact raw body`.
+- The Worker stores only a hash of each nonce and rejects replays.
+- HMAC key: Worker secret `PROCESSOR_SHARED_SECRET`.
 
-Routes:
-- `POST /internal/processor/ping` — authenticated connectivity check; body `{}`.
-- `POST /internal/processor/claim` — body `{"workerId":"processor-1"}`; atomically claims the oldest queued job. Returns `{ "job": null }` when idle, otherwise job data plus a one-time lease token.
-- `POST /internal/processor/heartbeat` — body `{"jobId":"...","leaseId":"...","leaseToken":"..."}`; extends the 90-second lease and returns `cancelRequested`.
-- `POST /internal/processor/progress` — same lease fields plus `stage` and integer `progress` (0–99).
-- `POST /internal/processor/release` — releases a claimed job back to queued for safe connection tests; if cancellation was requested, it becomes cancelled.
-- `POST /internal/processor/complete` — marks an active lease completed at 100% progress and clears the lease; rejects expired leases and cancellation requests.
-- `POST /internal/processor/fail` — records a sanitized terminal error code for the active lease, or acknowledges cancellation.
+The Python client implements the same signing contract. The raw lease token is returned only when a job is claimed; D1 stores its SHA-256 hash. Do not log or commit the token or shared secret.
 
-The processor must keep the lease token private. D1 stores only its SHA-256 hash. A stale lease is recovered on the next claim request; attempts are bounded by `max_attempts` (default 3). The first Python milestone deliberately claims, heartbeats, reports a test stage and releases a job. It does not download or process source media.
+Processor routes cover authenticated ping, claim, heartbeat, progress, source metadata verification, private source streaming, media/transcript/candidate persistence, lease-scoped clip multipart uploads, final clip registration, release and failure callbacks. Every mutating job operation is checked against the current lease ID, token hash, job state and expiry.
 
-## Configure before deployment
-1. Create a Cloudflare Access application protecting the frontend/API and permit only the two intended users.
-2. Set `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, and the two exact `ALLOWED_EMAILS` in Wrangler vars.
-3. Create D1 database `clipforge-db` and private R2 bucket `clipforge-private-media`.
-4. Replace the D1 database ID in `wrangler.toml`.
-5. Set the processor secret with `wrangler secret put PROCESSOR_SHARED_SECRET`; use the same high-entropy value in the processor's `PROCESSOR_SHARED_SECRET` environment variable. Never commit it.
-6. Install API dependencies and run `npm run typecheck`.
-7. Apply migrations with `wrangler d1 migrations apply clipforge-db --remote`.
+## Two-account isolation
 
-Do not deploy with placeholder Access values or D1 ID. No cloud resources are created by this repository change.
+Set `ALLOWED_EMAILS` to exactly the two intended Cloudflare Access email identities. Do not place the app behind an open sign-up flow. User-facing D1 reads and writes derive the user ID from the verified Access identity; clients never choose their own user ID. Source assets, jobs, candidates, clips and R2 object keys are owner-scoped.
 
-## Endpoints
-- `GET /health` — unauthenticated API health check.
-- `GET /api/me` — authenticated identity.
-- `POST /api/jobs` — `{ "urls": ["https://..."], "options": { "captions": true, "vertical": true, "instruction": "..." } }`.
-- `GET /api/jobs` — current user's jobs.
-- `GET /api/jobs/:jobId` — current user's job status.
-- `POST /api/jobs/:jobId/cancel` — request cancellation of one owned job.
-- `POST /api/jobs/cancel-all` — request cancellation of active jobs for the current user.
-- `GET /api/clips` — current user's clips.
+## Cloudflare configuration
 
-## Not yet operational
-The Python/FFmpeg media pipeline, source adapters, live/VOD detection, transcription, AI analysis, clip rendering, R2 upload/download routes, frontend API integration and deployment resources are not implemented/configured yet. Do not interpret a successful processor connectivity test as a working video clipper.
+The Worker config is `apps/api/wrangler.toml`. Before deploying:
+
+1. Create or select the D1 database named `clipforge-db`, then confirm its ID matches `database_id` in the config.
+2. Enable R2 and create a private bucket named `clipforge-private-media` (do not enable public access or an `r2.dev` URL).
+3. Configure a Cloudflare Access application for the app/API and restrict it to the two intended users.
+4. Replace `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` and `ALLOWED_EMAILS` placeholders with the actual Access team domain, application audience and two email addresses.
+5. Set the Worker secret `PROCESSOR_SHARED_SECRET` to a random value of at least 32 characters. Supply the same value only to the private processor host.
+6. Apply the migrations in order: `wrangler d1 migrations apply clipforge-db --remote`.
+7. Run `npm install` and `npm run typecheck` in this directory, then deploy only after all bindings, secrets and Access settings are correct.
+
+Do not deploy with placeholder Access settings. Keep R2 private. Never put credentials in this file, `wrangler.toml`, GitHub source, frontend variables or a committed environment file.
+
+## Processor deployment
+
+The separate Python processor has its own Docker image and single-instance Compose service. See `services/processor/README.md`. The processor is deliberately not deployed as a Cloudflare Worker because FFmpeg and faster-whisper require a normal Linux runtime and persistent local scratch/model storage.
+
+## Current cloud setup status
+
+The repository code includes the complete VOD processing path, but code being present is not proof of a live service. The inspected Cloudflare account currently has a D1 database named `clipforge-db` with zero tables, R2 is not enabled, and the deployed Worker in the account is named `morrow-backend` rather than `clipforge-api`. The live Worker has not been replaced and no Cloudflare deployment has been performed as part of this repository work.
+
+The app is not end-to-end operational until the D1 migrations are applied, private R2 is enabled and bound, Cloudflare Access is configured for the two accounts, the Worker is deployed, and the processor passes an authorized media job through to an owner-scoped clip download.
