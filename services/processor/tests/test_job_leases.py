@@ -24,6 +24,10 @@ def make_db() -> sqlite3.Connection:
     db.executescript((ROOT / "database/migrations/0003_processor_request_nonces.sql").read_text())
     db.executescript((ROOT / "database/migrations/0004_source_metadata.sql").read_text())
     db.executescript((ROOT / "database/migrations/0005_authorized_source_assets.sql").read_text())
+    db.executescript((ROOT / "database/migrations/0006_media_validation.sql").read_text())
+    db.executescript((ROOT / "database/migrations/0007_transcription.sql").read_text())
+    db.executescript((ROOT / "database/migrations/0008_moment_candidates.sql").read_text())
+    db.executescript((ROOT / "database/migrations/0009_private_clip_storage.sql").read_text())
     db.execute(
         "INSERT INTO users (id, auth_subject, email) VALUES ('user-1', 'subject-1', 'one@example.com')"
     )
@@ -346,7 +350,7 @@ def test_completion_callback_cannot_override_cancellation() -> None:
 def test_job_detail_query_hides_another_users_job() -> None:
     db = make_db()
     add_user_and_job(db, "user-2", "friend-job")
-    detail_sql = api_sql_containing("WHERE id = ?1 AND user_id = ?2")
+    detail_sql = api_sql_containing("FROM jobs WHERE id = ?1 AND user_id = ?2")
     row = db.execute(detail_sql, ("friend-job", "user-1")).fetchone()
     assert row is None
 
@@ -362,9 +366,28 @@ def test_clip_list_query_hides_another_users_clips() -> None:
         "INSERT INTO clips (id, job_id, user_id, output_key, title) VALUES (?, ?, ?, ?, ?)",
         ("clip-friend", "friend-job", "user-2", "users/user-2/clips/clip-friend.mp4", "Friend"),
     )
-    clips_sql = api_sql_containing("FROM clips WHERE user_id = ?1")
+    clips_sql = api_sql_containing("SELECT id, job_id AS jobId, title, description")
     rows = db.execute(clips_sql, ("user-1",)).fetchall()
     assert {row["id"] for row in rows} == {"clip-owner"}
+
+
+
+def test_clip_preview_lookup_is_scoped_to_authenticated_user() -> None:
+    db = make_db()
+    add_user_and_job(db, "user-2", "friend-job")
+    db.execute(
+        "INSERT INTO clips (id, job_id, user_id, output_key, title) VALUES (?, ?, ?, ?, ?)",
+        ("clip-owner", "job-1", "user-1", "users/user-1/clips/clip-owner.mp4", "Mine"),
+    )
+    db.execute(
+        "INSERT INTO clips (id, job_id, user_id, output_key, title) VALUES (?, ?, ?, ?, ?)",
+        ("clip-friend", "friend-job", "user-2", "users/user-2/clips/clip-friend.mp4", "Friend"),
+    )
+    preview_sql = api_sql_containing(
+        "SELECT output_key AS outputKey FROM clips WHERE id = ?1 AND user_id = ?2"
+    )
+    assert db.execute(preview_sql, ("clip-owner", "user-1")).fetchone() is not None
+    assert db.execute(preview_sql, ("clip-friend", "user-1")).fetchone() is None
 
 
 def test_cancel_all_query_only_marks_authenticated_users_jobs() -> None:

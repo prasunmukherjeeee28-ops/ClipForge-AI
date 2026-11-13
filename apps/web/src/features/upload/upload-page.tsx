@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   CloudUpload,
   FileVideo,
@@ -319,8 +320,9 @@ export function UploadPage() {
                       Private source file attached to your job
                     </div>
                     <p className="text-xs leading-relaxed text-zinc-400">
-                      Job {submittedJobId?.slice(0, 8)} is queued for official VOD metadata verification. Clip generation, transcription and rendering are not connected yet.
+                      Job {submittedJobId?.slice(0, 8)} is queued. Track processing progress here and find finished clips in your private library.
                     </p>
+                    <Link to="/library" className="inline-flex pt-1 text-xs font-medium text-violet-300 hover:text-violet-200">View job progress and clips →</Link>
                   </div>
                 ) : null}
               </div>
