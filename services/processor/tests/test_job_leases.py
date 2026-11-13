@@ -350,7 +350,7 @@ def test_completion_callback_cannot_override_cancellation() -> None:
 def test_job_detail_query_hides_another_users_job() -> None:
     db = make_db()
     add_user_and_job(db, "user-2", "friend-job")
-    detail_sql = api_sql_containing("transcript_sha256 AS transcriptSha256")
+    detail_sql = api_sql_containing("transcript_verified_at AS transcriptVerifiedAt, title, status, progress")
     row = db.execute(detail_sql, ("friend-job", "user-1")).fetchone()
     assert row is None
 
