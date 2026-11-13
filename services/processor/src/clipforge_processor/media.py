@@ -188,6 +188,7 @@ async def extract_audio(
         "-ac", "1",
         "-ar", "16000",
         "-c:a", "pcm_s16le",
+        "-fs", str(max_audio_bytes),
         "-f", "wav",
         "-y", str(temporary_path.resolve()),
     ]
@@ -206,7 +207,7 @@ async def extract_audio(
         if not temporary_path.is_file():
             raise MediaProcessingError("audio_extraction_failed", "FFmpeg did not produce an audio file.")
         size = temporary_path.stat().st_size
-        if size < 44 or size > max_audio_bytes:
+        if size < 44 or size >= max_audio_bytes:
             raise MediaProcessingError("audio_output_limit_exceeded", "The extracted audio is empty or exceeds the configured size limit.")
         temporary_path.chmod(0o600)
         temporary_path.replace(audio_path)
