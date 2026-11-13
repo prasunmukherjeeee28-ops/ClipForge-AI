@@ -255,22 +255,22 @@ def detect_moments(
         words = segment["words"]
         if words:
             for word in words:
-                second = min(duration - 1, max(0, int(word["start"])))
+                second = min(duration_bins - 1, max(0, int(word["start"])))
                 words_by_second[second] += 1.0
                 speech_by_second[second] = 1.0
         else:
             count = max(1, len(_WORD_RE.findall(text)))
             midpoint = (segment["start"] + segment["end"]) / 2
-            second = min(duration - 1, max(0, int(midpoint)))
+            second = min(duration_bins - 1, max(0, int(midpoint)))
             words_by_second[second] += float(count)
-            for index in range(max(0, int(segment["start"])), min(duration, math.ceil(segment["end"]))):
+            for index in range(max(0, int(segment["start"])), min(duration_bins, math.ceil(segment["end"]))):
                 speech_by_second[index] = 1.0
         markers = _normalised_marker_counts(text)
         if markers:
             all_markers.update(markers)
             for marker, count in markers.items():
                 midpoint = (segment["start"] + segment["end"]) / 2
-                second = min(duration - 1, max(0, int(midpoint)))
+                second = min(duration_bins - 1, max(0, int(midpoint)))
                 marker_by_second[second] += count
                 marker_events.append((midpoint, marker, count))
 
@@ -279,7 +279,7 @@ def detect_moments(
     speech_prefix = _prefix(speech_by_second)
     novelty_by_second = [0.0] * duration_bins
     for timestamp, marker, count in marker_events:
-        second = min(duration - 1, max(0, int(timestamp)))
+        second = min(duration_bins - 1, max(0, int(timestamp)))
         novelty_by_second[second] += count / math.sqrt(1.0 + all_markers[marker])
     novelty_prefix = _prefix(novelty_by_second)
     energy = [item.rms_dbfs for item in audio]
@@ -298,15 +298,16 @@ def detect_moments(
         last_start = math.floor(duration - length)
         for start in range(0, last_start + 1, step_seconds):
             end = min(float(start + length), duration)
-            word_count = int(_range_sum(words_prefix, start, end))
-            marker_count = int(_range_sum(marker_prefix, start, end))
-            speech_seconds = _range_sum(speech_prefix, start, end)
+            end_index = min(duration_bins, math.ceil(end))
+            word_count = int(_range_sum(words_prefix, start, end_index))
+            marker_count = int(_range_sum(marker_prefix, start, end_index))
+            speech_seconds = _range_sum(speech_prefix, start, end_index)
             speech_rate = word_count / float(length)
             if word_count < 3 or speech_seconds < 1:
                 continue
 
-            average_spike = _range_sum(spike_prefix, start, end) / length
-            peak_spike = max(audio_spikes[start:end], default=0.0)
+            average_spike = _range_sum(spike_prefix, start, end_index) / length
+            peak_spike = max(audio_spikes[start:end_index], default=0.0)
             acoustic = min(1.0, 0.65 * peak_spike + 0.35 * min(1.0, average_spike * 4.0))
 
             velocity = min(1.0, speech_rate / 2.5)
@@ -314,9 +315,9 @@ def detect_moments(
             transcript_velocity = 0.7 * velocity + 0.3 * marker_density
 
             third = max(1, length // 3)
-            first_speech = _range_sum(speech_prefix, start, min(end, start + third))
-            middle_spikes = max(audio_spikes[start + third:min(end, start + 2 * third)], default=0.0)
-            last_speech = _range_sum(speech_prefix, min(end, start + 2 * third), end)
+            first_speech = _range_sum(speech_prefix, start, min(end_index, start + third))
+            middle_spikes = max(audio_spikes[start + third:min(end_index, start + 2 * third)], default=0.0)
+            last_speech = _range_sum(speech_prefix, min(end_index, start + 2 * third), end_index)
             coverage = (float(first_speech > 0) + float(last_speech > 0)) / 2.0
             peak_alignment = min(1.0, middle_spikes + marker_density * 0.5)
             narrative = 0.65 * coverage + 0.35 * peak_alignment
