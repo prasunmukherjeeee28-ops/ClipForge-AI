@@ -8,6 +8,7 @@ import {
   ArrowRight,
   FolderOpen,
   Loader2,
+  Play,
   CheckCircle2,
   Activity as ActivityIcon,
   FileVideo,
@@ -233,5 +234,5 @@ export function DashboardPage() {
 }
 
 function PlayIcon() {
-  return <span className="flex h-10 w-10 items-center justify-center rounded-full border border-white/20 bg-black/60 text-zinc-200"><Scissors className="h-4 w-4" /></span>;
+  return <span className="flex h-10 w-10 items-center justify-center rounded-full border border-white/20 bg-black/60 text-zinc-200"><Play className="ml-0.5 h-4 w-4" /></span>;
 }
