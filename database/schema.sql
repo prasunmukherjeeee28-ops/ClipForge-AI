@@ -17,14 +17,15 @@ CREATE TABLE IF NOT EXISTS source_assets (
   filename TEXT NOT NULL CHECK(length(filename) BETWEEN 1 AND 200),
   content_type TEXT NOT NULL CHECK(content_type IN ('video/mp4','video/quicktime','video/webm','video/x-matroska')),
   size_bytes INTEGER NOT NULL CHECK(size_bytes BETWEEN 1 AND 2147483648),
-  status TEXT NOT NULL DEFAULT 'uploading' CHECK(status IN ('uploading','ready','failed')),
+  status TEXT NOT NULL DEFAULT 'uploading' CHECK(status IN ('uploading','finalizing','ready','failed','deleting')),
   upload_id TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   completed_at TEXT,
   CHECK(
-    (status = 'uploading' AND upload_id IS NOT NULL) OR
-    (status <> 'uploading' AND upload_id IS NULL)
+    (status IN ('uploading','finalizing') AND upload_id IS NOT NULL) OR
+    (status IN ('ready','failed') AND upload_id IS NULL) OR
+    status = 'deleting'
   )
 );
 
