@@ -41,7 +41,7 @@ def _timestamp(seconds: float) -> str:
 
 def _safe_caption_text(value: str) -> str:
     # Keep captions plain text: strip control characters and markup delimiters.
-    cleaned = re.sub(r"[\\x00-\\x1f\\x7f]", " ", value)
+    cleaned = re.sub(r"[\x00-\x1f\x7f]", " ", value)
     cleaned = cleaned.replace("<", "").replace(">", "").replace("{", "").replace("}", "")
     return " ".join(cleaned.split())[:500]
 
@@ -89,12 +89,12 @@ def _write_srt(transcript_path: Path, destination: Path, clip_start: float, clip
         if current:
             lines.append(current)
         entries.append(
-            f"{len(entries) + 1}\\n"
-            f"{_timestamp(left - clip_start)} --> {_timestamp(right - clip_start)}\\n"
+            f"{len(entries) + 1}\n"
+            f"{_timestamp(left - clip_start)} --> {_timestamp(right - clip_start)}\n"
             + "\\n".join(lines[:2])
         )
 
-    destination.write_text("\\n\\n".join(entries) + ("\\n" if entries else ""), encoding="utf-8")
+    destination.write_text("\n\n".join(entries) + ("\n" if entries else ""), encoding="utf-8")
     destination.chmod(0o600)
     return len(entries)
 
