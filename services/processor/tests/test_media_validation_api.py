@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from pathlib import Path
@@ -216,3 +217,53 @@ def test_transcription_ready_rejects_stale_expired_cancelled_and_wrong_owner() -
 
     for job_id in ("stale", "expired", "cancelled", "wrong-owner"):
         assert db.execute(sql, transcription_ready_values(job_id)).fetchone() is None
+
+
+
+def moment_candidate_insert_sql() -> str:
+    marker = 'app.post("/internal/processor/transcription-ready"'
+    section = API_SOURCE.split(marker, 1)[1].split("\\napp.post(", 1)[0]
+    match = re.search(r"`(INSERT INTO candidates[\\s\\S]+?)`", section)
+    assert match, "Could not find owner-lease-scoped moment candidate INSERT"
+    return match.group(1)
+
+
+def test_moment_candidates_are_persisted_only_for_the_active_owner_lease() -> None:
+    db = make_db()
+    add_asset(db, "asset-1", "user-1")
+    add_asset(db, "friend-asset", "user-2")
+    add_job(db, "job-1", "user-1", "asset-1")
+    add_job(db, "friend-job", "user-2", "friend-asset")
+    sql = moment_candidate_insert_sql()
+    payload = json.dumps([{
+        "startSeconds": 12.0,
+        "endSeconds": 42.0,
+        "score": 0.82,
+        "signals": {
+            "acousticSalience": 0.7,
+            "transcriptVelocity": 0.8,
+            "narrativeArc": 0.9,
+            "novelty": 0.75,
+        },
+        "wordCount": 48,
+        "markerCount": 2,
+        "rationale": "high speech/marker activity, context on both sides of a peak",
+    }])
+
+    inserted = db.execute(sql, ("job-1", "lease-1", "hash-1", payload))
+    assert inserted.rowcount == 1
+    row = db.execute(
+        """
+        SELECT candidates.start_seconds, candidates.end_seconds, candidates.score,
+               candidates.narrative_arc, jobs.user_id
+        FROM candidates JOIN jobs ON jobs.id = candidates.job_id
+        WHERE candidates.job_id = 'job-1'
+        """
+    ).fetchone()
+    assert tuple(row) == (12.0, 42.0, 0.82, 0.9, "user-1")
+
+    stale = db.execute(sql, ("job-1", "stale-lease", "hash-1", payload))
+    friend = db.execute(sql, ("friend-job", "lease-1", "hash-1", payload))
+    assert stale.rowcount == 0
+    assert friend.rowcount == 0
+    assert db.execute("SELECT COUNT(*) FROM candidates").fetchone()[0] == 1
