@@ -402,7 +402,7 @@ app.post("/internal/processor/transcription-ready", async (c) => {
   const results = await c.env.DB.batch(statements);
   const completed = results[results.length - 1]?.meta.changes ?? 0;
   if (!completed) return jsonError(c, "Lease is invalid, expired, cancelled, or no ready owner-matched source asset is attached.", 409);
-  return c.json({ ok: true, mediaReady: true, transcriptionReady: true, momentsReady: true, candidateCount: candidates!.length, stage: "moments_ready" });
+  return c.json({ ok: true, mediaReady: true, transcriptionReady: true, momentsReady: true, candidateCount: candidates!.length, stage: "rendering_clips" });
 });
 
 
