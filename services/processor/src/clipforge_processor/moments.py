@@ -233,14 +233,21 @@ def detect_moments(
         raise ValueError("max_results must be between 1 and 1000")
 
     audio = extract_audio_seconds(audio_path)
-    duration = len(audio)
-    if duration == 0:
+    duration_bins = len(audio)
+    if duration_bins == 0:
         return []
-    segments = _load_transcript(transcript_path, float(duration))
+    try:
+        with wave.open(str(audio_path), "rb") as source:
+            duration = source.getnframes() / float(source.getframerate())
+    except (wave.Error, EOFError, OSError) as exc:
+        raise MomentDetectionError("audio_artifact_invalid", "The normalized WAV duration could not be read.") from exc
+    if not math.isfinite(duration) or duration <= 0:
+        raise MomentDetectionError("audio_duration_unsupported", "The audio duration is invalid.")
+    segments = _load_transcript(transcript_path, duration)
 
-    words_by_second = [0.0] * duration
-    marker_by_second = [0.0] * duration
-    speech_by_second = [0.0] * duration
+    words_by_second = [0.0] * duration_bins
+    marker_by_second = [0.0] * duration_bins
+    speech_by_second = [0.0] * duration_bins
     all_markers: Counter[str] = Counter()
     marker_events: list[tuple[float, str, int]] = []
     for segment in segments:
@@ -270,7 +277,7 @@ def detect_moments(
     words_prefix = _prefix(words_by_second)
     marker_prefix = _prefix(marker_by_second)
     speech_prefix = _prefix(speech_by_second)
-    novelty_by_second = [0.0] * duration
+    novelty_by_second = [0.0] * duration_bins
     for timestamp, marker, count in marker_events:
         second = min(duration - 1, max(0, int(timestamp)))
         novelty_by_second[second] += count / math.sqrt(1.0 + all_markers[marker])
@@ -288,8 +295,9 @@ def detect_moments(
     for length in sorted(set(window_seconds)):
         if length > duration:
             continue
-        for start in range(0, duration - length + 1, step_seconds):
-            end = start + length
+        last_start = math.floor(duration - length)
+        for start in range(0, last_start + 1, step_seconds):
+            end = min(float(start + length), duration)
             word_count = int(_range_sum(words_prefix, start, end))
             marker_count = int(_range_sum(marker_prefix, start, end))
             speech_seconds = _range_sum(speech_prefix, start, end)
