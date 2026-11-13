@@ -68,11 +68,9 @@ function ClipCard({
       target="_blank"
       rel="noreferrer"
       aria-label={`Download ${clip.title}`}
-      className="inline-flex"
+      className="inline-flex h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.06] px-3 text-xs font-medium text-zinc-200 transition hover:bg-white/[0.1]"
     >
-      <Button size="sm" variant="secondary">
-        <Download className="h-4 w-4" /> Download
-      </Button>
+      <Download className="h-4 w-4" /> Download
     </a>
   );
 
@@ -295,8 +293,8 @@ export function LibraryPage() {
             />
             <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-500">
               <span>{formatDuration(previewClip.durationSeconds)} · 9:16 · {formatBytes(previewClip.sizeBytes)}</span>
-              <a href={getClipDownloadUrl(previewClip.id)} target="_blank" rel="noreferrer">
-                <Button size="sm"><Download className="h-4 w-4" /> Download MP4</Button>
+              <a href={getClipDownloadUrl(previewClip.id)} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center gap-2 rounded-lg bg-violet-550 px-3 text-xs font-semibold text-white transition hover:bg-violet-450">
+                <Download className="h-4 w-4" /> Download MP4
               </a>
             </div>
           </div>
