@@ -595,7 +595,7 @@ app.post("/internal/processor/clip-uploads/:clipId/complete", async (c) => {
   } catch {
     const recovered = await storage(c).head(upload.objectKey);
     if (!recovered || recovered.size !== upload.expectedSizeBytes) {
-      return jsonError(c, "R2 could not finalize the clip upload. Retry completion.", 409);
+      return jsonError(c, "Object storage could not finalize the clip upload. Retry completion.", 409);
     }
   }
   const stored = await storage(c).head(upload.objectKey);
@@ -898,7 +898,7 @@ app.post("/api/source-assets/:assetId/complete", async (c) => {
   if (!asset) return jsonError(c, "Active source upload not found.", 404);
 
   if (asset.status === "finalizing") {
-    // Recover a request that completed R2 but failed before it could update D1.
+    // Recover a request that completed object storage but failed before it could update D1.
     const existingObject = await storage(c).head(asset.objectKey);
     if (existingObject) {
       if (existingObject.size !== asset.sizeBytes) {
@@ -957,7 +957,7 @@ app.post("/api/source-assets/:assetId/complete", async (c) => {
       await c.env.DB.prepare(
         "UPDATE source_assets SET status = 'uploading', updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND user_id = ?2 AND status = 'finalizing' AND upload_id = ?3",
       ).bind(assetId, c.get("user").id, asset.uploadId).run();
-      return jsonError(c, "R2 could not finalize this upload. Check its parts and retry.", 409);
+      return jsonError(c, "Object storage could not finalize this upload. Check its parts and retry.", 409);
     }
   }
   if (storedObject.size !== asset.sizeBytes) {
@@ -1002,7 +1002,7 @@ app.delete("/api/source-assets/:assetId", async (c) => {
         if (existingObject) throw new Error("Multipart upload cleanup is incomplete.");
       }
     } else {
-      // R2 delete is safe to repeat if a previous cleanup succeeded but the
+      // Object deletion is safe to repeat if a previous cleanup succeeded but the
       // D1 row deletion failed.
       await storage(c).delete(asset.objectKey);
     }
