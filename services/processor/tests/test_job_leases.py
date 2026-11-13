@@ -242,7 +242,7 @@ def test_cancel_endpoint_is_scoped_to_owning_user() -> None:
 def test_job_list_query_is_scoped_to_authenticated_user() -> None:
     db = make_db()
     add_user_and_job(db, "user-2", "friend-job")
-    list_sql = api_sql_containing("SELECT id, source_url AS sourceUrl")
+    list_sql = api_sql_containing("transcript_sha256 AS transcriptSha256")
     rows = db.execute(list_sql, ("user-1", 100)).fetchall()
     assert {row["id"] for row in rows} == {"job-1"}
 
