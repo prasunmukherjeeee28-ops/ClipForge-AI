@@ -459,7 +459,7 @@ app.post("/internal/processor/clip-uploads", async (c) => {
   if (object && object.size === body.sizeBytes) {
     await c.env.DB.prepare(
       "UPDATE clip_uploads SET expected_size_bytes = ?1, part_count = ?2, title = ?3, duration_seconds = ?4, status = 'stored', upload_id = NULL, lease_id = ?5, updated_at = CURRENT_TIMESTAMP WHERE id = ?6 AND job_id = ?7",
-    ).bind(body.sizeBytes, Math.ceil(body.sizeBytes! / CLIP_UPLOAD_PART_BYTES), body.title.trim(),
+    ).bind(body.sizeBytes!, Math.ceil(body.sizeBytes! / CLIP_UPLOAD_PART_BYTES), body.title.trim(),
       body.endSeconds - body.startSeconds, body.leaseId, clipId, body.jobId).run();
     return c.json({ clipUploadId: clipId, partSizeBytes: CLIP_UPLOAD_PART_BYTES,
       partCount: Math.ceil(body.sizeBytes! / CLIP_UPLOAD_PART_BYTES), stored: true });
@@ -475,14 +475,14 @@ app.post("/internal/processor/clip-uploads", async (c) => {
       c.env.DB.prepare("DELETE FROM clip_upload_parts WHERE clip_id = ?1").bind(clipId),
       c.env.DB.prepare(
         "UPDATE clip_uploads SET upload_id = ?1, lease_id = ?2, expected_size_bytes = ?3, part_count = ?4, title = ?5, duration_seconds = ?6, status = 'uploading', updated_at = CURRENT_TIMESTAMP WHERE id = ?7 AND job_id = ?8",
-      ).bind(multipart.uploadId, body.leaseId, body.sizeBytes, partCount, body.title.trim(),
+      ).bind(multipart.uploadId, body.leaseId, body.sizeBytes!, partCount, body.title.trim(),
         body.endSeconds - body.startSeconds, clipId, body.jobId),
     ]);
   } else {
     await c.env.DB.prepare(
       "INSERT INTO clip_uploads (id, job_id, user_id, candidate_id, object_key, upload_id, lease_id, expected_size_bytes, part_count, title, duration_seconds, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'uploading')",
     ).bind(clipId, body.jobId, candidate.userId, candidate.candidateId, objectKey, multipart.uploadId,
-      body.leaseId, body.sizeBytes, partCount, body.title.trim(), body.endSeconds - body.startSeconds).run();
+      body.leaseId, body.sizeBytes!, partCount, body.title.trim(), body.endSeconds - body.startSeconds).run();
   }
   return c.json({ clipUploadId: clipId, partSizeBytes: CLIP_UPLOAD_PART_BYTES, partCount, stored: false }, 201);
 });
