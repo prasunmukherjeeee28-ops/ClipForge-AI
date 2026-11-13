@@ -65,12 +65,12 @@ def route_section(marker: str) -> str:
     return API_SOURCE.split(marker, 1)[1].split("\napp.", 1)[0]
 
 
-def sql_for(marker: str, prefix: str) -> str:
+def sql_for(marker: str, fragment: str) -> str:
     for line in route_section(marker).splitlines():
-        match = re.search(r'^\s+"(' + re.escape(prefix) + r' [^"]+)",\s*$', line)
-        if match:
+        match = re.search(r'^\\s+"(.*)",\\s*$', line)
+        if match and fragment in match.group(1):
             return match.group(1)
-    raise AssertionError(f"Could not find {prefix} SQL in {marker}")
+    raise AssertionError(f"Could not find SQL containing {fragment!r} in {marker}")
 
 
 def test_only_owner_selected_candidate_with_ready_source_can_be_queued_for_render() -> None:
@@ -126,7 +126,7 @@ def test_clip_render_claim_is_owner_asset_and_selected_candidate_scoped() -> Non
         VALUES ('clip-1','job-1','user-1','candidate-1','users/user-1/clips/clip-1.mp4','Highlight',30,'queued')
         """
     )
-    sql = sql_for('app.post("/internal/processor/render-claim"', "UPDATE clips SET status = 'rendering'")
+    sql = sql_for('app.post("/internal/processor/render-claim"', "attempt_count = attempt_count + 1")
     claimed = db.execute(sql, ("lease-1", "hash-1")).fetchone()
     assert claimed is not None
     assert claimed["id"] == "clip-1"
