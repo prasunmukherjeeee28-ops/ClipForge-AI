@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
+
+import clipforge_processor.worker as worker_module
 
 from clipforge_processor.worker import _build_semantic_evidence, _clip_title, _select_render_candidates
 
@@ -82,3 +85,72 @@ def test_clip_title_prefers_sanitized_semantic_title(tmp_path: Path) -> None:
     title = _clip_title(transcript, 10.0, 20.0, 1, "  The unexpected GTA moment!  ")
 
     assert title == "The unexpected GTA moment"
+
+
+
+def test_poll_loop_repeats_until_stopped(monkeypatch) -> None:
+    async def scenario() -> None:
+        stop = asyncio.Event()
+        calls = 0
+
+        async def fake_run_once() -> int:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                stop.set()
+            return 0
+
+        monkeypatch.setattr(worker_module, "run_once", fake_run_once)
+        result = await worker_module.run_forever(
+            poll_interval_seconds=1,
+            stop_event=stop,
+            register_signal_handlers=False,
+        )
+        assert result == 0
+        assert calls == 2
+
+    asyncio.run(scenario())
+
+
+def test_poll_loop_cancels_active_cycle_on_shutdown(monkeypatch) -> None:
+    async def scenario() -> None:
+        stop = asyncio.Event()
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def fake_run_once() -> int:
+            started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.set()
+            return 0
+
+        monkeypatch.setattr(worker_module, "run_once", fake_run_once)
+        task = asyncio.create_task(worker_module.run_forever(
+            poll_interval_seconds=10,
+            stop_event=stop,
+            register_signal_handlers=False,
+        ))
+        await started.wait()
+        stop.set()
+        assert await task == 0
+        assert cancelled.is_set()
+
+    asyncio.run(scenario())
+
+
+def test_poll_loop_rejects_unbounded_or_zero_interval() -> None:
+    async def scenario() -> None:
+        for value in (0, 0.5, 301):
+            try:
+                await worker_module.run_forever(
+                    poll_interval_seconds=value,
+                    stop_event=asyncio.Event(),
+                    register_signal_handlers=False,
+                )
+            except ValueError:
+                continue
+            raise AssertionError(f"poll interval {value} should have been rejected")
+
+    asyncio.run(scenario())
