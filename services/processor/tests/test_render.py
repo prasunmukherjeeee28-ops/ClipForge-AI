@@ -106,3 +106,24 @@ def test_timeout_is_reported_without_exposing_process_output(tmp_path: Path, mon
         render_vertical_clip(source, transcript, tmp_path / "clip.mp4", start_seconds=0, end_seconds=10)
     assert error.value.code == "render_timeout"
     assert "private process output" not in str(error.value)
+
+
+def test_tracked_face_filter_builds_bounded_vertical_crop() -> None:
+    from clipforge_processor.render import _tracked_face_filter
+    from clipforge_processor.tracking import CameraPoint
+
+    graph = _tracked_face_filter(
+        1920,
+        1080,
+        [CameraPoint(0.0, 0.0, 0.0), CameraPoint(1.0, 500.0, 0.0)],
+    )
+    assert graph is not None
+    assert graph.startswith("crop=608:1080:")
+    assert "scale=1080:1920" in graph
+    assert "if(lt(t,1.000)" in graph
+
+
+def test_tracked_face_filter_returns_none_without_face_path() -> None:
+    from clipforge_processor.render import _tracked_face_filter
+
+    assert _tracked_face_filter(1920, 1080, []) is None
