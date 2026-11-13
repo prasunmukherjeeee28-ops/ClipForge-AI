@@ -23,8 +23,8 @@ migrations_dir = "../../database/migrations"
 # Configure PROCESSOR_SHARED_SECRET with: wrangler secret put PROCESSOR_SHARED_SECRET
 
 [vars]
-ACCESS_TEAM_DOMAIN = "YOUR_TEAM.cloudflareaccess.com"
-ACCESS_AUD = "SET_CLOUDFLARE_ACCESS_APPLICATION_AUD"
+ACCESS_TEAM_DOMAIN = "little-base-dedb.cloudflareaccess.com"
+ACCESS_AUD = "72fac205e59e7770aaecb3ec09d3cac80c31a4e1146b785eef23f3322600ff2c"
 ALLOWED_EMAILS = "first-user@example.com,second-user@example.com"
 B2_ENDPOINT = "https://s3.SET_B2_REGION.backblazeb2.com"
 B2_REGION = "SET_B2_REGION"
