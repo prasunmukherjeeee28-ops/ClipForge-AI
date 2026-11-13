@@ -1,6 +1,6 @@
 # Moment detector evaluation
 
-This small, deterministic benchmark compares manually labelled highlight ranges with the processor's ranked moment candidates. It does not change detector scoring or claim that a high-scoring window is entertaining.
+This deterministic benchmark compares manually labelled highlight ranges with the processor's ranked moment candidates. It does not change detector scoring or claim that a high-scoring window is entertaining.
 
 ## Input format
 
@@ -26,11 +26,11 @@ Create a predictions JSON file from detector output. It accepts the candidate sh
 }
 ```
 
-Only the timestamps and score are used. Additional detector fields are ignored. Both arrays can also be supplied as top-level JSON arrays; labels may use the key `labels`, and predictions may use `predictions`.
+Only timestamps and score are used. Additional detector fields are ignored. Both arrays can also be supplied as top-level JSON arrays; labels may use the key `labels`, and predictions may use `predictions`.
 
 ## Run
 
-From `services/processor` after installing the development dependencies:
+From `services/processor` after installing development dependencies:
 
 ```bash
 python -m clipforge_processor.evaluate_moments --labels /path/to/labels.json --predictions /path/to/predictions.json --k 3 --iou-threshold 0.3
@@ -43,7 +43,7 @@ The default evaluation is top 3 predictions with a temporal intersection-over-un
 - **Precision@K:** matched predictions divided by K (not the number of predictions returned).
 - **Recall@K:** matched labelled highlights divided by all labelled highlights.
 - **Duplicate prediction rate@K:** share of selected predictions that overlap another selected prediction at or above the IoU threshold.
-- **Boundary error:** mean absolute start and end timestamp error for matched pairs, in seconds. Unmatched items are not included in boundary error.
+- **Boundary error:** mean absolute start and end timestamp error for matched pairs, in seconds. Unmatched items are not included.
 - **Matches:** per-pair start error, end error and temporal IoU.
 
-The matcher greedily assigns the highest-IoU one-to-one pairs. Use the same IoU threshold and K when comparing detector versions. For a fair benchmark, label the footage before inspecting detector output, use footage the account is authorized to process, and keep the same labelled set across runs. A benchmark score measures agreement with those annotations, not universal highlight quality.
+Matching uses augmenting paths to maximize the number of one-to-one matches above the IoU threshold. When multiple predictions compete for one label, higher-ranked predictions are considered first; a match may be reassigned when that allows another prediction to match a different label. Use the same IoU threshold and K when comparing detector versions. For a fair benchmark, label footage before inspecting detector output, use footage the account is authorized to process, and keep the same labelled set across runs. A benchmark score measures agreement with those annotations, not universal highlight quality.
