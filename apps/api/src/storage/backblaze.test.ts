@@ -39,7 +39,7 @@ describe("BackblazeBucket object operations", () => {
   });
 
   it("rejects dot path segments before URL normalization can change the object key", async () => {
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn(async () => new Response(null, { status: 200, headers: { "content-length": "123", etag: '"safe"' } }));
     vi.stubGlobal("fetch", fetchMock);
     const bucket = new BackblazeBucket(config);
 
