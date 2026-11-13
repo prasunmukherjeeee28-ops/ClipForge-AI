@@ -1336,6 +1336,25 @@ app.get("/api/clips", async (c) => {
   return c.json({ clips: result.results });
 });
 
+app.get("/api/clips/:clipId/preview", async (c) => {
+  const clip = await c.env.DB.prepare(
+    "SELECT output_key AS outputKey, title FROM clips WHERE id = ?1 AND user_id = ?2 AND status = 'ready'",
+  ).bind(c.req.param("clipId"), c.get("user").id).first<{ outputKey: string; title: string }>();
+  if (!clip) return jsonError(c, "Ready clip not found.", 404);
+  const object = await c.env.MEDIA.get(clip.outputKey);
+  if (!object) return jsonError(c, "The rendered MP4 is not available in private storage.", 404);
+  return new Response(object.body, {
+    status: 200,
+    headers: {
+      "Content-Type": "video/mp4",
+      "Content-Length": String(object.size),
+      "Content-Disposition": "inline",
+      "Cache-Control": "private, no-store",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+});
+
 app.get("/api/clips/:clipId/download", async (c) => {
   const clip = await c.env.DB.prepare(
     "SELECT output_key AS outputKey, title FROM clips WHERE id = ?1 AND user_id = ?2 AND status = 'ready'",
