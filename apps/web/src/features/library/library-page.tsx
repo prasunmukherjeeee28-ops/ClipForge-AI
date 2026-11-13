@@ -9,6 +9,7 @@ import { Progress } from "@/components/ui/progress";
 import {
   cancelClipRender,
   getClipDownloadUrl,
+  getClipPreviewUrl,
   getClips,
   retryClipRender,
   type UserClip,
@@ -104,11 +105,22 @@ export function LibraryPage() {
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {clips.map((clip) => (
             <Card key={clip.id} className="overflow-hidden">
-              <div className="relative flex aspect-video items-center justify-center bg-black">
-                <div className="flex flex-col items-center gap-2 text-zinc-600">
-                  <Scissors className="h-7 w-7" />
-                  <span className="text-[11px]">MP4 · {clip.aspectRatio}</span>
-                </div>
+              <div className="relative flex min-h-40 items-center justify-center bg-black">
+                {clip.status === "ready" ? (
+                  <video
+                    src={getClipPreviewUrl(clip.id)}
+                    controls
+                    preload="metadata"
+                    playsInline
+                    className="max-h-[420px] w-full bg-black object-contain"
+                    aria-label={`Preview of ${clip.title}`}
+                  />
+                ) : (
+                  <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 text-zinc-600">
+                    <Scissors className="h-7 w-7" />
+                    <span className="text-[11px]">MP4 · {clip.aspectRatio}</span>
+                  </div>
+                )}
                 <Badge tone={statusTone(clip.status)} className="absolute right-3 top-3">{clip.status}</Badge>
               </div>
               <div className="space-y-3 p-4">
