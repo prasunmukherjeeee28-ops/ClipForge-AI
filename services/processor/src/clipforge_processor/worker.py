@@ -52,22 +52,26 @@ async def run_once() -> int:
             )
 
             if metadata.source_type == "live":
-                error_code = "live_source_not_supported"
+                result = await client.fail(job_id, lease_id, lease_token, "live_source_not_supported")
+                outcome = "live_source_not_supported"
             else:
-                # Public metadata is not a media download grant. A later
-                # ingestion step must attach a creator-authorized source file.
-                error_code = "authorized_media_asset_required"
+                # The job can only be claimed after a completed, user-owned
+                # source asset has been attached. Platform metadata alone
+                # never grants media access.
+                result = await client.mark_source_ready(job_id, lease_id, lease_token)
+                outcome = "source_ready"
 
-            result = await client.fail(job_id, lease_id, lease_token, error_code)
             print(
-                "Source inspected; media processing was not started:",
+                "Source inspection finished:",
                 json.dumps(
                     {
                         "jobId": job_id,
+                        "sourceAssetId": job.get("sourceAssetId"),
                         "platform": metadata.platform,
                         "sourceType": metadata.source_type,
                         "durationSeconds": metadata.duration_seconds,
                         "mediaAccess": metadata.media_access,
+                        "outcome": outcome,
                         "result": result,
                     },
                     ensure_ascii=False,
