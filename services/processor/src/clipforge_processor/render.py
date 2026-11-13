@@ -154,12 +154,15 @@ def _tracked_subject_filter(
                 confidence=float(getattr(item, "confidence", 1.0)),
             )
             for item in observations
+            if clip_start <= float(item.time_seconds) <= clip_end
         ]
         points = smooth_camera_path(
             normalized,
             frame_width=frame_width,
             frame_height=frame_height,
-            clip_start=clip_start,
+            # FFmpeg's crop filter sees original source PTS because -ss is
+            # an output option. Preserve absolute timestamps in the expression.
+            clip_start=0.0,
             clip_end=clip_end,
             crop_width=crop_width,
             crop_height=crop_height,
@@ -256,7 +259,7 @@ def render_vertical_clip(
         )
         if tracked_filter:
             filter_complex = (
-                f"[0:v]setpts=PTS-STARTPTS,{tracked_filter},setsar=1,fps=30,{subtitles_filter}[v]"
+                f"[0:v]{tracked_filter},setsar=1,fps=30,{subtitles_filter}[v]"
             )
         else:
             filter_complex = (
