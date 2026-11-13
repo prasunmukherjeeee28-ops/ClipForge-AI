@@ -27,6 +27,7 @@ def make_db() -> sqlite3.Connection:
         "0005_authorized_source_assets.sql",
         "0006_media_validation.sql",
         "0007_transcription.sql",
+        "0008_candidate_persistence.sql",
     ):
         db.executescript((ROOT / "database/migrations" / migration).read_text())
     db.executemany(
@@ -186,18 +187,18 @@ def test_transcription_ready_persists_media_and_transcript_metadata() -> None:
     add_job(db, "job-1", "user-1", "asset-1")
     result = db.execute(transcription_ready_sql(), transcription_ready_values()).fetchone()
     assert result is not None
-    assert result["status"] == "review"
+    assert result["status"] == "processing"
     row = db.execute(
         """
         SELECT stage, progress, media_container, audio_size_bytes,
                transcript_model, transcript_language, transcript_segment_count,
-               transcript_size_bytes, transcript_sha256, lease_id
+               transcript_size_bytes, transcript_sha256, lease_id, lease_token_hash
         FROM jobs WHERE id = 'job-1'
         """
     ).fetchone()
     assert tuple(row) == (
         "transcribed", 60, "mov,mp4,m4a", 4_000_044,
-        "base", "en", 42, 12_345, "a" * 64, None,
+        "base", "en", 42, 12_345, "a" * 64, "lease-1", "hash-1",
     )
 
 
