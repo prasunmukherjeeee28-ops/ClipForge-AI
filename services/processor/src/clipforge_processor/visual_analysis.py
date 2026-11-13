@@ -70,6 +70,8 @@ class VisualEvidence:
     visual_salience: float
     detected_object_count: int
     object_classes: tuple[str, ...]
+    frame_width: int
+    frame_height: int
     focus_observations: tuple[ObjectDetection, ...] = ()
 
 
@@ -277,6 +279,11 @@ def analyze_candidate_windows(
     if not capture.isOpened():
         raise VisualAnalysisError("visual analysis source could not be opened")
     output: dict[tuple[float, float], VisualEvidence] = {}
+    source_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    source_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if source_width < 1 or source_height < 1:
+        capture.release()
+        raise VisualAnalysisError("visual analysis video dimensions are invalid")
     try:
         for start, end, _score in ranked:
             previous_gray = None
@@ -336,6 +343,8 @@ def analyze_candidate_windows(
                 visual_salience=_clamp(visual_score),
                 detected_object_count=len(tracks),
                 object_classes=tuple(sorted({item.detection.class_name for item in tracks})),
+                frame_width=source_width,
+                frame_height=source_height,
                 focus_observations=focus,
             )
     except (cv2.error, ValueError) as exc:
