@@ -38,6 +38,6 @@ See `docs/ARCHITECTURE.md`, `docs/API.md`, `apps/api/README.md` and `services/pr
 
 ## Current status
 
-The VOD processing code and owner-scoped API routes are present on `main`. This change adds the processor container bootstrap and continuous polling; it does not deploy the processor or API. The connected Cloudflare account needs the `clipforge-app-db` migrations applied, Backblaze B2 bucket credentials configured as Worker variables/secrets, Access allowlist values configured, and the intended API Worker deployed. A real authorized media job through to a private clip download has not yet been verified end to end.
+The VOD processing code and owner-scoped API routes are present on `main`. The dedicated `clipforge-app-db` D1 database has been created and migrations `0001`–`0009` have been applied. The legacy database remains untouched. R2 activation was unavailable; the project uses Backblaze B2 in code, but B2 is not yet enabled and no private bucket or application key exists. Cloudflare Access is not yet configured, no `clipforge-api` Worker is deployed, and the Python processor host has not been selected. No end-to-end authorized media job has been verified.
 
 Never commit `.env` files, Worker secrets, API keys, lease tokens, uploaded videos, audio, or transcripts. The local `.env.example` is a template only.
