@@ -25,7 +25,15 @@ const encodeSegment = (value: string) =>
   encodeURIComponent(value).replace(/[!'()*]/g, (character) =>
     `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
   );
-const encodeKey = (key: string) => key.split("/").map(encodeSegment).join("/");
+const encodeKey = (key: string) => {
+  const segments = key.split("/");
+  // The URL parser normalizes literal and percent-encoded dot segments.
+  // Reject them before constructing a URL so a key cannot target a sibling object.
+  if (segments.some((segment) => segment === "." || segment === "..")) {
+    throw new Error("Object keys must not contain dot path segments.");
+  }
+  return segments.map(encodeSegment).join("/");
+};
 const xmlValue = (xml: string, tag: string): string | null => {
   const match = new RegExp(`<(?:[A-Za-z0-9]+:)?${tag}>([\\s\\S]*?)</(?:[A-Za-z0-9]+:)?${tag}>`).exec(xml);
   return match?.[1]?.trim() ?? null;
