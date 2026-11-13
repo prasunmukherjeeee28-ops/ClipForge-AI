@@ -382,6 +382,25 @@ export function UploadPage() {
                 <Badge tone="green">On</Badge>
               </div>
             ))}
+            <div className="px-2 pt-4">
+              <Button
+                className="w-full"
+                size="lg"
+                disabled={!file || !sourceUrl.trim() || phase === "uploading" || phase === "submitted"}
+                onClick={() => void startUpload()}
+              >
+                <Scissors className="h-4 w-4" />
+                {session ? "Resume source upload" : "Upload & prepare source"}
+              </Button>
+              <p className="mt-2 text-center text-[11px] leading-relaxed text-zinc-600">
+                Stores your authorized file privately and queues VOD metadata verification.
+              </p>
+              {phase === "submitted" ? (
+                <Button className="mt-3 w-full" variant="secondary" onClick={reset}>
+                  Upload another source
+                </Button>
+              ) : null}
+            </div>
           </div>
         </Card>
       </div>
