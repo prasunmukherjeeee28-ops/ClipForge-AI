@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -22,6 +23,13 @@ class Settings:
     max_video_duration_seconds: int = 43200
     max_audio_bytes: int = 1_500_000_000
     ffmpeg_threads: int = 2
+    stt_model: str = "base"
+    stt_model_cache_dir: str = "/var/cache/clipforge/models"
+    stt_cpu_threads: int = 2
+    stt_chunk_seconds: int = 300
+    stt_beam_size: int = 1
+    stt_language: str | None = None
+    stt_chunk_timeout_seconds: int = 1800
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -74,6 +82,18 @@ class Settings:
         if not ffprobe_binary or not ffmpeg_binary:
             raise ValueError("FFPROBE_BINARY and FFMPEG_BINARY must not be empty")
 
+        stt_model = os.environ.get("PROCESSOR_STT_MODEL", "base").strip()
+        if stt_model not in {"tiny", "base", "small", "medium", "large-v3", "large-v3-turbo", "distil-large-v3"}:
+            raise ValueError("PROCESSOR_STT_MODEL is not a supported faster-whisper model")
+        stt_model_cache_dir = os.environ.get(
+            "PROCESSOR_STT_MODEL_CACHE_DIR", "/var/cache/clipforge/models"
+        ).strip()
+        if not stt_model_cache_dir:
+            raise ValueError("PROCESSOR_STT_MODEL_CACHE_DIR must not be empty")
+        stt_language = os.environ.get("PROCESSOR_STT_LANGUAGE", "").strip().lower() or None
+        if stt_language is not None and not re.fullmatch(r"[a-z]{2,3}(?:-[a-z0-9]{2,8})?", stt_language):
+            raise ValueError("PROCESSOR_STT_LANGUAGE must be a valid language code")
+
         return cls(
             api_base_url=base_url,
             shared_secret=secret,
@@ -90,4 +110,11 @@ class Settings:
             max_video_duration_seconds=bounded_int("PROCESSOR_MAX_VIDEO_DURATION_SECONDS", 43200, 60, 43200),
             max_audio_bytes=bounded_int("PROCESSOR_MAX_AUDIO_BYTES", 1_500_000_000, 1024, 1_500_000_000),
             ffmpeg_threads=bounded_int("PROCESSOR_FFMPEG_THREADS", 2, 1, 4),
+            stt_model=stt_model,
+            stt_model_cache_dir=stt_model_cache_dir,
+            stt_cpu_threads=bounded_int("PROCESSOR_STT_CPU_THREADS", 2, 1, 8),
+            stt_chunk_seconds=bounded_int("PROCESSOR_STT_CHUNK_SECONDS", 300, 60, 900),
+            stt_beam_size=bounded_int("PROCESSOR_STT_BEAM_SIZE", 1, 1, 5),
+            stt_language=stt_language,
+            stt_chunk_timeout_seconds=bounded_int("PROCESSOR_STT_CHUNK_TIMEOUT_SECONDS", 1800, 60, 3600),
         )
