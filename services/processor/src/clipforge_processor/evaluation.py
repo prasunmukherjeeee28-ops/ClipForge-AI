@@ -25,8 +25,8 @@ def _number(value: Any, field: str) -> float:
 def _window(item: Any, index: int, kind: str) -> dict[str, float]:
     if not isinstance(item, dict):
         raise EvaluationInputError(f"{kind}[{index}] must be an object")
-    start = _number(item.get("startSeconds", item.get("start_seconds")), f"{kind}[{index}].startSeconds")
-    end = _number(item.get("endSeconds", item.get("end_seconds")), f"{kind}[{index}].endSeconds")
+    start = _number(item.get("startSeconds", item.get("start_seconds", item.get("start"))), f"{kind}[{index}].startSeconds")
+    end = _number(item.get("endSeconds", item.get("end_seconds", item.get("end"))), f"{kind}[{index}].endSeconds")
     if start < 0 or end <= start:
         raise EvaluationInputError(f"{kind}[{index}] must have 0 <= startSeconds < endSeconds")
     score_value = item.get("score", 0)
@@ -60,6 +60,8 @@ def evaluate_windows(
         raise EvaluationInputError("k must be at least 1")
     if not 0 < iou_threshold <= 1:
         raise EvaluationInputError("iou_threshold must be in (0, 1]")
+    labels = [_window(item, index, "highlights") for index, item in enumerate(labels)]
+    predictions = [_window(item, index, "candidates") for index, item in enumerate(predictions)]
     ranked = sorted(predictions, key=lambda item: (-item["score"], item["start"], item["end"]))
     selected = ranked[:k]
 
