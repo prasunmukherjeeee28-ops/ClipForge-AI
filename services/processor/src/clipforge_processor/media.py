@@ -138,7 +138,7 @@ async def probe_media(
         process = await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
         )
     except FileNotFoundError as exc:
         raise MediaProcessingError("ffprobe_unavailable", "FFprobe is not installed or is not on PATH.") from exc
@@ -196,7 +196,7 @@ async def extract_audio(
         process = await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
         )
     except FileNotFoundError as exc:
         raise MediaProcessingError("ffmpeg_unavailable", "FFmpeg is not installed or is not on PATH.") from exc
