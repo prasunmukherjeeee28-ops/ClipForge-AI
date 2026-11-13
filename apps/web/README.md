@@ -28,23 +28,20 @@ src/
 
 ## Backend integration status
 
-The upload screen now uses the real authenticated API contract for:
-- Creating a URL job that waits for a creator-authorized source asset.
-- Uploading a local MP4, MOV, WebM or MKV file to private R2 with resumable 8 MiB multipart chunks.
-- Resuming already-confirmed parts, finalizing the private object and attaching it to the current user's job.
+The upload screen uses the authenticated API to create jobs, upload creator-authorized source files to private R2 with resumable multipart chunks, and attach the completed source asset to the user's job.
+
+The dashboard, processing activity and clip library now read the current account's data from:
+- `GET /api/jobs` for source processing state and progress.
+- `GET /api/clips` for finished clip metadata.
+- `GET /api/clips/:clipId/preview` for authenticated byte-range MP4 playback.
+- `GET /api/clips/:clipId/download` for authenticated MP4 downloads.
+
+The library refreshes job and clip data periodically, shows active job progress, supports cancellation, and previews/downloads clips without exposing public R2 object URLs. The dashboard displays live account-scoped counts and recent jobs/clips. Empty states are based on the authenticated API response rather than sample clips.
 
 The API client uses relative `/api` paths by default. Set
 `VITE_CLIPFORGE_API_BASE_URL` at build time only when the API is mounted at a
-compatible origin. The current Worker does not configure cross-origin CORS, so
-the intended deployment is a same-origin API route protected by Cloudflare
-Access. Both user accounts must be separately allowlisted on the Access app.
+compatible origin. The Worker does not configure cross-origin CORS; the intended
+deployment is a same-origin API route protected by Cloudflare Access. Both user
+accounts must be separately allowlisted on the Access app.
 
-This is an ingestion stage, not a finished clipping pipeline. The processor
-currently verifies official YouTube/Twitch VOD metadata and moves an eligible
-job to `source_ready`; it does not yet read the R2 file, validate its contents
-with FFprobe, transcribe, detect moments, render clips, or produce downloads.
-Dashboard, library, editor and Live Radar screens still contain fixture data.
-Do not interpret sample dashboard/library entries as real user clips.
-
-Upload previews use a local object URL of the selected file. Editor/radar
-playback remains a UI placeholder until real clip media endpoints are added.
+The editor's candidate-trimming controls and Live Radar still contain presentation/demo behavior and are not connected to editable source media or live-stream ingestion. The backend currently creates finished clips automatically; it does not yet support destructive clip deletion or post-render re-editing. Do not interpret old fixture data in those remaining screens as real user assets.
