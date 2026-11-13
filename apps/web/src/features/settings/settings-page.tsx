@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { HardDrive, ShieldCheck, UserRound, RefreshCw, Video, Scissors } from "lucide-react";
+import { ShieldCheck, UserRound, RefreshCw, Video, Scissors } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
