@@ -299,8 +299,14 @@ def test_moment_candidate_insert_requires_current_owner_lease_and_transcript() -
     add_job(db, "job-1", "user-1", "asset-1")
     set_transcript_ready(db)
     insert = moments_sql("INSERT INTO candidates")
+    generation_id = "b" * 32
+    marker_update = db.execute(
+        moments_sql("SET candidate_generation_id"),
+        (generation_id, "job-1", "lease-1", "hash-1"),
+    )
+    assert marker_update.rowcount == 1
     values = (
-        "candidate-1", "job-1", 12.0, 42.0, "excerpt", 90.0, "b" * 32,
+        "candidate-1", "job-1", 12.0, 42.0, "excerpt", 90.0, generation_id,
         "reaction phrase", "{}", "lease-1", "hash-1",
     )
     assert db.execute(insert, values).rowcount == 1
