@@ -67,9 +67,9 @@ def route_section(marker: str) -> str:
 
 def sql_for(marker: str, fragment: str) -> str:
     for line in route_section(marker).splitlines():
-        match = re.search(r'^\\s+"(.*)",\\s*$', line)
-        if match and fragment in match.group(1):
-            return match.group(1)
+        stripped = line.strip()
+        if stripped.startswith('"') and stripped.endswith('",') and fragment in stripped:
+            return stripped[1:-2]
     raise AssertionError(f"Could not find SQL containing {fragment!r} in {marker}")
 
 
