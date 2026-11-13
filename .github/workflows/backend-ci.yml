@@ -7,12 +7,18 @@ on:
       - "apps/api/**"
       - "services/processor/**"
       - ".github/workflows/backend-ci.yml"
+      - "compose.processor.yaml"
+      - ".gitignore"
+      - ".dockerignore"
   pull_request:
     branches: [main]
     paths:
       - "apps/api/**"
       - "services/processor/**"
       - ".github/workflows/backend-ci.yml"
+      - "compose.processor.yaml"
+      - ".gitignore"
+      - ".dockerignore"
   workflow_dispatch:
 
 permissions:
@@ -60,3 +66,5 @@ jobs:
         run: python -m pip install -e ".[dev]"
       - name: Run processor tests
         run: python -m pytest -q
+      - name: Build processor container image
+        run: docker build --file Dockerfile --tag clipforge-processor:ci ../..

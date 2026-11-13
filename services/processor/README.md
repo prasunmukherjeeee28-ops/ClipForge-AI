@@ -89,13 +89,50 @@ YOUTUBE_DATA_API_KEY=... python -m clipforge_processor.source_probe 'https://you
 
 For Twitch metadata, set `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET`.
 
-Run one processor cycle:
+Run the continuous processor loop:
 
 ```bash
 python -m clipforge_processor.worker
 ```
 
-Do not run multiple copies of this one-job worker simultaneously. The worker handles one queued source at a time.
+The process authenticates to the Worker, claims at most one job, processes it under its lease, then polls again after `PROCESSOR_POLL_INTERVAL_SECONDS`. It handles one job at a time. SIGINT/SIGTERM stop the poll loop and cancel the in-flight cycle so the lease can be released/recovered safely. Run exactly one replica until concurrency and host capacity have been measured.
+
+For a single diagnostic cycle:
+
+```bash
+python -c "import asyncio; from clipforge_processor.worker import run_once; raise SystemExit(asyncio.run(run_once()))"
+```
+
+### Container deployment
+
+The repository includes a minimal Debian-based image with FFmpeg/FFprobe and a Compose service. It runs as a non-root UID, uses a read-only root filesystem, drops Linux capabilities, and persists only the processor scratch and model-cache volumes.
+
+From the repository root:
+
+```bash
+cp services/processor/.env.example services/processor/.env
+# Edit services/processor/.env with the real Worker URL and private credentials.
+docker compose -f compose.processor.yaml config
+docker compose -f compose.processor.yaml build
+docker compose -f compose.processor.yaml up -d
+docker compose -f compose.processor.yaml logs -f --tail=100 processor
+```
+
+Check the authenticated API connection and FFmpeg/FFprobe installation:
+
+```bash
+docker compose -f compose.processor.yaml run --rm processor python -m clipforge_processor.health_check
+docker compose -f compose.processor.yaml exec processor ffmpeg -version
+docker compose -f compose.processor.yaml exec processor ffprobe -version
+```
+
+Stop without deleting the persistent model and scratch volumes:
+
+```bash
+docker compose -f compose.processor.yaml stop
+```
+
+The Compose service does not publish a port. It makes outbound HTTPS requests to the Worker and supported metadata APIs only. The processor environment file is ignored by Git; never paste or commit its contents. Do not scale this service above one replica yet.
 
 ## Source upload and processing flow
 
@@ -128,17 +165,18 @@ exact_raw_body
 
 Each request uses a fresh random nonce. The Worker stores only its SHA-256 hash and rejects replayed nonces. Each job claim returns a lease token; only its SHA-256 hash is stored in D1. Never log or persist the raw lease token.
 
-## Next implementation steps
+## Remaining integration and validation work
 
-1. Connect the existing dashboard, clip library, job-progress and editor screens to the new owner-scoped clip APIs; add in-app preview and explicit delete/retention controls.
-2. Finish connecting the editor to the generated clip media and add non-destructive trim controls that do not imply server-side re-rendering until that API exists.
-3. Benchmark the optional Gemini semantic adapter on an annotated GTA VI dataset; compare its classifications and ranking against human labels before relying on it for production.
-4. Add render QA (duration, codec, audio presence, subtitle timing and output decode checks) plus retry-safe cleanup for orphaned R2 multipart uploads.
-5. Benchmark candidate precision, recall, boundary accuracy and processor throughput on an annotated GTA VI VOD set before tuning scoring weights or adding acoustic models.
+1. Complete a live-cloud smoke test after the D1 migrations are applied, private R2 is enabled, the Worker is deployed and Access is restricted to the two users. Verify source multipart upload, owner-matched source streaming, clip multipart upload, D1 registration, preview byte ranges and download isolation.
+2. Add repeatable Cloudflare integration tests for D1 migrations and R2 multipart completion/abort, including failure cleanup and cross-user access rejection.
+3. Add render QA (duration, codec, audio presence, subtitle timing and output decode checks) plus retry-safe cleanup for orphaned R2 multipart uploads.
+4. Benchmark candidate precision, recall, boundary accuracy and processor throughput on an annotated GTA VI VOD set before tuning scoring weights or adding acoustic models.
+5. Benchmark the optional semantic adapter on a human-labelled dataset before relying on model categories or title hints.
 6. Move intermediate audio/transcript artifacts to lifecycle-managed private storage and add automated retention/cleanup.
-7. Add live-stream processing only after the VOD pipeline is stable.
+7. Connect the editor to generated clip media and add non-destructive trim controls only when server-side re-rendering is implemented.
+8. Add live-stream processing only after the VOD pipeline is stable.
 
-The code and tests do not prove that a live Cloudflare account, R2 bucket or production processor host is configured correctly. No Cloudflare resources are created or deployed by these changes.
+The Docker build and CI tests validate packaging and code contracts; they do not prove a live Cloudflare account, R2 bucket or production processor host is configured correctly. No Cloudflare resources are created or deployed by these repository changes.
 
 
 ## Vertical clip rendering

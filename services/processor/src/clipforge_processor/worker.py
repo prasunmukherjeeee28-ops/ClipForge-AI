@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import signal
 import threading
 import uuid
 from pathlib import Path
@@ -593,6 +594,17 @@ async def run_once() -> int:
             result = await client.fail(job_id, lease_id, lease_token, "cancelled_by_user")
             print("Job cancelled:", json.dumps({"jobId": job_id, "result": result}))
             return 0
+        except asyncio.CancelledError:
+            # A service shutdown is not a user cancellation. Release the lease so
+            # the job can be claimed promptly by the next processor instance.
+            try:
+                await client.release(job_id, lease_id, lease_token)
+            except Exception as release_error:
+                print(
+                    "Processor shutdown could not release the lease; it will expire:",
+                    type(release_error).__name__,
+                )
+            raise
         except LeaseLost:
             # A replacement worker may now own this job. Do not mutate its state.
             print("Processor lease lost; stopping without modifying the job.")
@@ -615,5 +627,64 @@ async def run_once() -> int:
         await client.close()
 
 
+async def run_forever(
+    poll_interval_seconds: float = 10.0,
+    *,
+    stop_event: asyncio.Event | None = None,
+    register_signal_handlers: bool = True,
+) -> int:
+    """Continuously claim one job at a time until SIGINT/SIGTERM or stop_event."""
+    if not 1.0 <= poll_interval_seconds <= 300.0:
+        raise ValueError("poll_interval_seconds must be between 1 and 300")
+
+    stop = stop_event or asyncio.Event()
+    loop = asyncio.get_running_loop()
+    installed_signals: list[signal.Signals] = []
+    if register_signal_handlers:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(signum, stop.set)
+                installed_signals.append(signum)
+            except (NotImplementedError, RuntimeError):
+                # Signal handlers are not available on every event-loop platform.
+                continue
+
+    try:
+        while not stop.is_set():
+            cycle_task = asyncio.create_task(run_once(), name="clipforge-processor-cycle")
+            stop_task = asyncio.create_task(stop.wait(), name="clipforge-processor-stop")
+            try:
+                done, _ = await asyncio.wait(
+                    {cycle_task, stop_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if stop_task in done and stop.is_set():
+                    cycle_task.cancel()
+                    await asyncio.gather(cycle_task, return_exceptions=True)
+                    break
+                await cycle_task
+            finally:
+                if not cycle_task.done():
+                    cycle_task.cancel()
+                if not stop_task.done():
+                    stop_task.cancel()
+                await asyncio.gather(cycle_task, stop_task, return_exceptions=True)
+
+            if not stop.is_set():
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=poll_interval_seconds)
+                except asyncio.TimeoutError:
+                    pass
+        return 0
+    finally:
+        for signum in installed_signals:
+            loop.remove_signal_handler(signum)
+
+
+async def main() -> int:
+    settings = Settings.from_env()
+    return await run_forever(settings.poll_interval_seconds)
+
+
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(run_once()))
+    raise SystemExit(asyncio.run(main()))

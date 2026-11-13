@@ -1,0 +1,51 @@
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+apps/api/.dev.vars
+apps/api/.dev.vars.*
+!apps/api/.dev.vars.example
+
+# Python
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# JavaScript / TypeScript
+node_modules/
+**/node_modules/
+dist/
+.vite/
+.turbo/
+
+# Cloudflare local state
+.wrangler/
+.dev.vars
+
+# Local processor data (never commit videos, transcripts, or model weights)
+.clipforge/
+processor-scratch/
+processor-model-cache/
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.wav
+*.srt
+*.transcript.json
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
