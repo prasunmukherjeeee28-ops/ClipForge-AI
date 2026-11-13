@@ -10,6 +10,7 @@ from typing import Awaitable, TypeVar
 from .client import ProcessorClient
 from .config import Settings
 from .media import MediaProcessingError, extract_audio, probe_media
+from .moments import detect_moments
 from .source_adapters import SourceInspectionError, inspect_video_url
 from .transcription_runner import run_transcription_process
 
@@ -270,6 +271,27 @@ async def run_once() -> int:
                 cancelled,
                 lease_lost,
             )
+            await _with_lease(
+                client.report_progress(job_id, lease_id, lease_token, "analyzing_moments", 63),
+                cancelled,
+                lease_lost,
+            )
+            candidates = await _with_lease(
+                asyncio.to_thread(
+                    detect_moments,
+                    audio_path,
+                    Path(transcription["path"]),
+                    max_results=100,
+                ),
+                cancelled,
+                lease_lost,
+            )
+            candidate_payload = [candidate.as_dict() for candidate in candidates]
+            await _with_lease(
+                client.report_progress(job_id, lease_id, lease_token, "persisting_moments", 68),
+                cancelled,
+                lease_lost,
+            )
             result = await _with_lease(
                 client.report_transcription_ready(
                     job_id, lease_id, lease_token,
@@ -285,6 +307,7 @@ async def run_once() -> int:
                     transcript_segment_count=transcription["segment_count"],
                     transcript_size_bytes=transcription["size_bytes"],
                     transcript_sha256=transcription["sha256"],
+                    candidates=candidate_payload,
                 ),
                 cancelled,
                 lease_lost,
