@@ -22,7 +22,7 @@ D1-backed single-job processor for private, creator-authorized VOD files. It ver
 - Claims selected clip candidates under a separate 90-second clip lease, reloads the original authorized source from private R2, and renders H.264/AAC MP4 with optional word-timestamp ASS captions.
 - Fits the complete gameplay/source frame into a 9:16 foreground over a blurred, scaled background, avoiding automatic center-cropping of gameplay.
 - Validates rendered output with FFprobe, caps clips at 120 seconds and 512 MiB, uploads in 8 MiB private R2 multipart parts, and marks the clip ready only after completion and size verification.
-- Owner-scoped UI/API can track render progress, cancel or retry failures, and stream ready MP4 downloads.
+- Owner-scoped UI/API can track render progress, cancel or retry failures, preview ready MP4s with byte-range seeking, and download the same files as attachments.
 - Renews the 90-second lease every 25 seconds and stops work when cancellation or lease loss is detected.
 
 The user must upload an original/export or another provider-approved file they have permission to process. A public YouTube or Twitch URL and official metadata do not prove permission to process a media file. The worker does not scrape platform pages, bypass access controls or download video bytes from YouTube/Twitch.
