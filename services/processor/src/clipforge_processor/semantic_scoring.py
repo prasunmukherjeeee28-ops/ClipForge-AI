@@ -28,7 +28,7 @@ class GeminiSemanticAdapter:
         self,
         api_key: str,
         *,
-        model: str = "gemini-2.5-flash",
+        model: str = "gemini-3.8-flash",
         timeout_seconds: float = 25.0,
         max_candidates: int = 40,
     ) -> None:
@@ -97,7 +97,7 @@ class GeminiSemanticAdapter:
                             "index": {"type": "INTEGER"},
                             "score": {"type": "NUMBER"},
                             "category": {"type": "STRING", "enum": sorted(_ALLOWED_CATEGORIES)},
-                            "title_hint": {"type": "STRING", "nullable": True},
+                            "title_hint": {"type": "STRING"},
                             "rationale": {"type": "STRING"},
                         },
                         "required": ["index", "score", "category", "title_hint", "rationale"],
@@ -110,7 +110,7 @@ class GeminiSemanticAdapter:
         try:
             response = httpx.post(
                 url,
-                params={"key": self._api_key},
+                headers={"x-goog-api-key": self._api_key},
                 json={
                     "contents": [{"role": "user", "parts": [{"text": prompt}]}],
                     "generationConfig": {
@@ -124,7 +124,8 @@ class GeminiSemanticAdapter:
             )
             response.raise_for_status()
             payload = response.json()
-            text = payload["candidates"][0]["content"]["parts"][0]["text"]
+            parts = payload["candidates"][0]["content"]["parts"]
+            text = next(part["text"] for part in reversed(parts) if isinstance(part, dict) and isinstance(part.get("text"), str) and part.get("thought") is not True)
             decoded = json.loads(text)
             rows = decoded.get("highlights") if isinstance(decoded, dict) else None
             if not isinstance(rows, list):
@@ -149,7 +150,7 @@ class GeminiSemanticAdapter:
                 or not 0 <= float(score) <= 1
                 or category not in _ALLOWED_CATEGORIES
                 or not isinstance(rationale, str)
-                or (title is not None and not isinstance(title, str))
+                or not isinstance(title, str)
             ):
                 continue
             seen.add(index)
