@@ -193,7 +193,7 @@ class ProcessorClient:
                 if expected < 1 or expected > max_bytes:
                     raise ValueError("Source asset size is outside the configured limit.")
                 with partial.open("xb") as output:
-                    for chunk in response.iter_bytes(chunk_size=1024 * 1024):
+                    async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
                         total += len(chunk)
                         if total > max_bytes or total > expected:
                             raise ValueError("Source response exceeded its verified size.")
