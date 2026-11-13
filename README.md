@@ -11,7 +11,7 @@ Process only original/export or provider-approved media that the user has permis
 - React + TypeScript + Vite + Tailwind web app (installable PWA target)
 - Cloudflare Worker + Hono API and Cloudflare Access
 - Cloudflare D1 for users, job lifecycle, leases, moment candidates and clip metadata
-- Private Cloudflare R2 for source files and generated MP4s
+- Private Backblaze B2 (S3-compatible) object storage for source files and generated MP4s
 - Separate Python processor with FFmpeg/FFprobe and local faster-whisper transcription
 - Deterministic multimodal moment ranking with optional provider-backed transcript refinement
 
