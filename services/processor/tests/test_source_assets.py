@@ -269,3 +269,28 @@ def test_finalizing_asset_cannot_be_reserved_for_deletion() -> None:
     assert db.execute(
         "SELECT status FROM source_assets WHERE id = 'asset-finalizing'"
     ).fetchone()["status"] == "finalizing"
+
+def test_part_reservation_requires_owned_asset_still_uploading() -> None:
+    db = make_db()
+    add_asset(db, "asset-uploading", "user-1", status="uploading")
+    add_asset(db, "asset-ready", "user-1")
+    add_asset(db, "asset-friend", "user-2", status="uploading")
+    reserve_part = api_sql_containing("INSERT INTO source_asset_parts")
+
+    own_upload = db.execute(
+        reserve_part, ("asset-uploading", 1, 8388608, "user-1")
+    )
+    assert own_upload.rowcount == 1
+
+    db.execute(
+        "UPDATE source_assets SET status = 'deleting' WHERE id = 'asset-ready'"
+    )
+    deleting = db.execute(
+        reserve_part, ("asset-ready", 1, 8388608, "user-1")
+    )
+    assert deleting.rowcount == 0
+
+    cross_user = db.execute(
+        reserve_part, ("asset-friend", 1, 8388608, "user-1")
+    )
+    assert cross_user.rowcount == 0
