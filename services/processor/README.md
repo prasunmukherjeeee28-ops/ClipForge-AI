@@ -31,7 +31,7 @@ The user must upload an original/export or another provider-approved file they h
 
 - Python 3.11+
 - FFmpeg and FFprobe installed on the processor host and available on PATH, or configured using `FFMPEG_BINARY` and `FFPROBE_BINARY`.
-- A deployed Worker with migrations `0001_initial.sql` through `0008_candidate_persistence.sql` applied.
+- A deployed Worker with migrations `0001_initial.sql` through `0010_clip_output_digest.sql` applied.
 - Cloudflare Access configured for the two intended users.
 - Worker secret `PROCESSOR_SHARED_SECRET` set to a random value of at least 32 characters and supplied to the processor environment. Never commit it.
 - Persistent, access-restricted volumes mounted at `PROCESSOR_SCRATCH_DIR` and `PROCESSOR_STT_MODEL_CACHE_DIR`. Audio and transcript artifacts remain on the trusted processor host; the model cache avoids downloading weights for every job. The model is downloaded from its model registry on first use, so allow outbound HTTPS during initial setup or pre-populate the cache before running jobs.
@@ -93,13 +93,13 @@ YOUTUBE_DATA_API_KEY=... python -m clipforge_processor.source_probe 'https://you
 
 For Twitch metadata, set `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET`.
 
-Run one processor cycle:
+Run the persistent processor service (it serially polls the queue and handles one job at a time):
 
 ```bash
 python -m clipforge_processor.worker
 ```
 
-Do not run multiple copies of this one-job worker simultaneously. The worker handles one queued source at a time.
+Keep exactly one processor instance for this MVP. It polls every five seconds by default, completes a source-analysis or clip-render job, then polls again. Set `PROCESSOR_POLL_INTERVAL_SECONDS` to change the delay (1–120 seconds). Do not start multiple instances until concurrency and CPU/memory quotas have been explicitly increased.
 
 ## Source upload and processing flow
 
@@ -107,14 +107,16 @@ Do not run multiple copies of this one-job worker simultaneously. The worker han
 2. The user uploads an original/export file they are authorized to process. The Worker creates an owner-scoped private R2 multipart upload with 8 MiB parts.
 3. The API verifies every uploaded part and finalizes the R2 object.
 4. The user attaches the ready asset to their own job. A source asset can be attached to only one job.
-5. The Python processor claims the job under a short-lived D1 lease and verifies official platform metadata.
+5. The Python processor continuously polls the Worker and claims the job under a short-lived D1 lease, then verifies official platform metadata.
 6. The processor requests the attached source from the signed internal endpoint. The Worker validates the current lease and owner match, then streams the private R2 body directly without buffering the full file in Worker memory.
 7. FFprobe validates the actual local file. FFmpeg extracts the first audio stream into mono 16 kHz PCM WAV.
 8. The processor writes `audio.wav` and `media.json` under `<scratch>/users/<user-uuid>/<job-uuid>/`, removes the temporary downloaded source, then runs local speech recognition in an isolated child process. Five-minute chunks are checkpointed atomically so an expired lease or process restart can resume completed chunks.
 9. The processor writes `transcript.json` with absolute segment and word timestamps, language metadata, and a SHA-256 digest. Only transcript verification metadata is sent to D1; audio and transcript text remain on private processor storage. The job remains under its active lease at stage `transcribed`.
 10. The local moment-analysis module reads the retained WAV and transcript in an isolated subprocess, calculates lightweight one-second audio features, scores overlapping multi-scale candidate windows, and applies IoU-based NMS.
 11. Up to 50 candidates, including timestamps, excerpt, score, signal breakdown and rationale, are persisted transactionally through a lease-scoped Worker callback. The job transitions to `review` / `moments_detected`; the account owner can retrieve and mark candidates through authenticated API routes.
-
+12. After an owner selects a candidate, the API creates one idempotent per-candidate clip record. The same processor polls the clip queue, reloads the original private source from R2 under a separate clip lease, and reads the retained transcript from the private per-job scratch directory.
+13. FFmpeg renders a 9:16 H.264/AAC MP4 with an uncropped foreground over a blurred background; optional subtitles are generated from absolute word timestamps. FFprobe checks the output streams, profile and duration before upload.
+14. The processor hashes the output and initializes an R2 multipart upload. Each part is at most 8 MiB and is HMAC-authenticated as a metadata-plus-binary packet. Retries only reuse parts when both output size and SHA-256 match. R2 completion and stored size are verified before D1 marks the clip `ready`; users can then download through the authenticated owner-scoped API.
 Audio, transcript and candidate report artifacts remain on the private processor volume so a render worker can reuse the transcript and refetch the original source from R2. Configure encryption-at-rest, backup and retention at the host/storage layer. Automated intermediate-artifact cleanup is still needed; the renderer currently removes its local source and output artifacts after a successful upload.
 
 ## Request signing
