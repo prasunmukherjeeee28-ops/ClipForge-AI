@@ -33,6 +33,7 @@ def make_db() -> sqlite3.Connection:
         "0003_processor_request_nonces.sql",
         "0004_source_metadata.sql",
         "0005_authorized_source_assets.sql",
+        "0006_media_validation.sql",
     ):
         db.executescript((ROOT / "database/migrations" / migration).read_text())
     db.executemany(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -56,13 +57,14 @@ class ProcessorClient:
     async def close(self) -> None:
         await self._http.aclose()
 
-    async def post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def post(self, path: str, payload: dict[str, Any], *, timeout: float | None = None) -> dict[str, Any]:
         body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         headers = signed_headers(self._secret, "POST", path, body)
         response = await self._http.post(
             f"{self._base_url}{path}",
             content=body,
             headers=headers,
+            timeout=timeout,
         )
         response.raise_for_status()
         return response.json()
@@ -156,6 +158,209 @@ class ProcessorClient:
                 "title": title,
                 "durationSeconds": duration_seconds,
                 "publishedAt": published_at,
+            },
+        )
+
+    async def download_source_asset(
+        self,
+        job_id: str,
+        lease_id: str,
+        lease_token: str,
+        destination: "Path",
+        *,
+        max_bytes: int = 2_147_483_648,
+    ) -> int:
+        """Stream the lease-owned R2 source object to a private local file."""
+        from pathlib import Path
+
+        if not isinstance(destination, Path):
+            destination = Path(destination)
+        payload = {"jobId": job_id, "leaseId": lease_id, "leaseToken": lease_token}
+        body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        path = "/internal/processor/source-asset"
+        headers = signed_headers(self._secret, "POST", path, body)
+        partial = destination.with_name(destination.name + ".partial")
+        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        partial.unlink(missing_ok=True)
+        total = 0
+        try:
+            async with self._http.stream(
+                "POST", f"{self._base_url}{path}", content=body, headers=headers
+            ) as response:
+                response.raise_for_status()
+                raw_length = response.headers.get("content-length")
+                if raw_length is None or not raw_length.isdigit():
+                    raise ValueError("Source response did not include a valid content length.")
+                expected = int(raw_length)
+                if expected < 1 or expected > max_bytes:
+                    raise ValueError("Source asset size is outside the configured limit.")
+                with partial.open("xb") as output:
+                    async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
+                        total += len(chunk)
+                        if total > max_bytes or total > expected:
+                            raise ValueError("Source response exceeded its verified size.")
+                        output.write(chunk)
+                if total != expected:
+                    raise ValueError("Source response ended before the verified size was downloaded.")
+            partial.chmod(0o600)
+            partial.replace(destination)
+            return total
+        except BaseException:
+            partial.unlink(missing_ok=True)
+            raise
+
+    async def report_media_ready(
+        self,
+        job_id: str,
+        lease_id: str,
+        lease_token: str,
+        *,
+        container: str,
+        video_codec: str,
+        source_audio_codec: str,
+        width: int,
+        height: int,
+        duration_seconds: float,
+        audio_size_bytes: int,
+    ) -> dict[str, Any]:
+        return await self.post(
+            "/internal/processor/media-ready",
+            {
+                "jobId": job_id,
+                "leaseId": lease_id,
+                "leaseToken": lease_token,
+                "container": container,
+                "videoCodec": video_codec,
+                "sourceAudioCodec": source_audio_codec,
+                "width": width,
+                "height": height,
+                "durationSeconds": duration_seconds,
+                "audioCodec": "pcm_s16le",
+                "audioSampleRate": 16000,
+                "audioChannels": 1,
+                "audioSizeBytes": audio_size_bytes,
+            },
+        )
+
+    async def report_transcription_ready(
+        self,
+        job_id: str,
+        lease_id: str,
+        lease_token: str,
+        *,
+        container: str,
+        video_codec: str,
+        source_audio_codec: str,
+        width: int,
+        height: int,
+        duration_seconds: float,
+        audio_size_bytes: int,
+        transcript_model: str,
+        transcript_language: str | None,
+        transcript_segment_count: int,
+        transcript_size_bytes: int,
+        transcript_sha256: str,
+        candidates: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Persist media, transcript metadata, and owner-scoped moment candidates."""
+        return await self.post(
+            "/internal/processor/transcription-ready",
+            {
+                "jobId": job_id,
+                "leaseId": lease_id,
+                "leaseToken": lease_token,
+                "container": container,
+                "videoCodec": video_codec,
+                "sourceAudioCodec": source_audio_codec,
+                "width": width,
+                "height": height,
+                "durationSeconds": duration_seconds,
+                "audioCodec": "pcm_s16le",
+                "audioSampleRate": 16000,
+                "audioChannels": 1,
+                "audioSizeBytes": audio_size_bytes,
+                "transcriptModel": transcript_model,
+                "transcriptLanguage": transcript_language,
+                "transcriptSegmentCount": transcript_segment_count,
+                "transcriptSizeBytes": transcript_size_bytes,
+                "transcriptSha256": transcript_sha256,
+                "candidates": candidates,
+            },
+        )
+
+
+    async def begin_clip_upload(
+        self,
+        job_id: str,
+        lease_id: str,
+        lease_token: str,
+        *,
+        start_seconds: float,
+        end_seconds: float,
+        title: str,
+        size_bytes: int,
+    ) -> dict[str, Any]:
+        return await self.post(
+            "/internal/processor/clip-uploads",
+            {
+                "jobId": job_id,
+                "leaseId": lease_id,
+                "leaseToken": lease_token,
+                "startSeconds": start_seconds,
+                "endSeconds": end_seconds,
+                "title": title,
+                "sizeBytes": size_bytes,
+            },
+            timeout=120,
+        )
+
+    async def upload_clip_part(
+        self,
+        job_id: str,
+        lease_id: str,
+        lease_token: str,
+        clip_upload_id: str,
+        part_number: int,
+        data: bytes,
+    ) -> dict[str, Any]:
+        return await self.post(
+            f"/internal/processor/clip-uploads/{clip_upload_id}/parts/{part_number}",
+            {
+                "jobId": job_id,
+                "leaseId": lease_id,
+                "leaseToken": lease_token,
+                "data": base64.b64encode(data).decode("ascii"),
+            },
+            timeout=120,
+        )
+
+    async def complete_clip_upload(
+        self,
+        job_id: str,
+        lease_id: str,
+        lease_token: str,
+        clip_upload_id: str,
+    ) -> dict[str, Any]:
+        return await self.post(
+            f"/internal/processor/clip-uploads/{clip_upload_id}/complete",
+            {"jobId": job_id, "leaseId": lease_id, "leaseToken": lease_token},
+            timeout=120,
+        )
+
+    async def report_clips_ready(
+        self,
+        job_id: str,
+        lease_id: str,
+        lease_token: str,
+        clip_ids: list[str],
+    ) -> dict[str, Any]:
+        return await self.post(
+            "/internal/processor/clips-ready",
+            {
+                "jobId": job_id,
+                "leaseId": lease_id,
+                "leaseToken": lease_token,
+                "clipIds": clip_ids,
             },
         )
 

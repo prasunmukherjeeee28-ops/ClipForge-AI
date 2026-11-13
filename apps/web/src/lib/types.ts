@@ -4,9 +4,26 @@
  * wired to the real API later without reshaping feature code.
  */
 
-export type JobStatus = "queued" | "processing" | "review" | "completed" | "failed";
+export type JobStatus = "queued" | "processing" | "review" | "completed" | "failed" | "cancelled";
 
 export type JobStage =
+  | "awaiting_source_asset"
+  | "queued"
+  | "claimed"
+  | "source_metadata_verified"
+  | "downloading_source"
+  | "validating_media"
+  | "extracting_audio"
+  | "transcribing_audio"
+  | "finalizing_transcript"
+  | "analyzing_moments"
+  | "persisting_moments"
+  | "audio_extracted"
+  | "transcribed"
+  | "moments_ready"
+  | "cancellation_requested"
+  | "cancelled"
+  | "failed"
   | "uploading"
   | "transcribing"
   | "analyzing"

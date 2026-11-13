@@ -31,7 +31,7 @@ flowchart TD
 - **API:** authenticate and authorize requests, create jobs, expose status and short-lived media access, and provide HMAC-authenticated processor endpoints. No heavy FFmpeg work in Workers.
 - **D1:** users, jobs, source-asset ownership/upload state, multipart part records, lease state, candidate timestamps, clip metadata, status, scores and storage keys. It is the single source of truth for job dispatch. Never store video bytes.
 - **R2:** original videos and exports; keep buckets private.
-- **Processor:** separate Python runtime handles authorized media acquisition, transcription, analysis, FFmpeg, storage and progress callbacks. It starts with one active job to protect a small CPU-only machine.
+- **Processor:** separate Python runtime handles authorized media ingestion, FFprobe validation, FFmpeg audio extraction, local CPU INT8 speech transcription, analysis, rendering, storage and progress callbacks. It starts with one active job to protect a small CPU-only machine.
 - **Job dispatch:** Python polls the Worker API. The Worker atomically claims a queued D1 row and returns a short-lived per-job lease token. Heartbeats extend the lease; expired leases are retried up to the configured attempt limit. There is no external Queue consumer in this initial architecture.
 
 ## AI modules
@@ -48,10 +48,15 @@ These are ordinary modules/functions inside one analysis service. Scores are est
 4. The user attaches the ready asset to the matching job. The API checks job ownership, asset ownership, readiness and one-asset/one-job uniqueness before queuing it.
 5. Python polls the internal API and atomically claims only queued jobs with a ready, owner-matched asset.
 6. Processor parses the platform video/VOD ID and retrieves metadata only from the official YouTube Data API or Twitch Helix API.
-7. A VOD moves to `review` / `source_ready`; active/upcoming live sources are rejected for this VOD-only milestone. Metadata does not prove that the uploaded file matches the platform source or that the user has rights; the user is responsible for providing media they are authorized to process.
-8. Next, the processor must read the attached private R2 object and validate it with FFprobe before bounded audio extraction/transcription.
-9. AI modules evaluate candidates and suggest boundaries/titles; FFmpeg renders vertical clips and subtitles.
-10. Exports are stored in private R2; metadata/status are saved in D1, and the web app provides owner-authorized playback/download.
+7. Active/upcoming live sources are rejected for this VOD-only milestone. Metadata does not prove that the uploaded file matches the platform source or that the user has rights; the user is responsible for providing media they are authorized to process.
+8. The processor streams the attached private R2 object only under the current owner-matched job lease, then FFprobe validates the actual video/audio streams, duration and dimensions.
+9. FFmpeg extracts mono 16 kHz PCM WAV audio to a private persistent scratch volume partitioned by user UUID and job UUID; the temporary downloaded source is removed after successful extraction.
+10. faster-whisper transcribes the WAV locally using CPU INT8 and bounded five-minute chunks. Each completed chunk is atomically checkpointed; the final transcript contains absolute segment and word timestamps. Audio and transcript text remain on the private processor volume. D1 stores only the transcript model, language, segment count, size and SHA-256 digest; the job transitions to `review` / `transcribed`.
+11. A deterministic local analysis pass computes one-second RMS/ZCR audio features, transcript word density and reaction-phrase signals. It evaluates multi-scale overlapping candidate windows, combines acoustic salience, transcript velocity, setup/peak/payoff proxies and within-VOD phrase rarity, then applies temporal IoU NMS. It does not infer semantic categories or promise virality.
+12. The Worker persists owner-scoped candidates but keeps the same active lease; it does not move the job to review or clear the lease before rendering.
+13. The processor selects up to three high-scoring non-overlapping candidates, renders 1080×1920 H.264/AAC MP4s with timestamped subtitles, and derives conservative titles from transcript excerpts.
+14. The processor uploads clips to private R2 using lease-scoped multipart endpoints. Each upload is size-verified, and a final lease-checked D1 callback registers the clips and marks the job completed.
+15. Users list and download only their own clips through authenticated API routes. The R2 bucket is never made public; no unauthenticated object URLs are exposed.
 
 ## Cancellation and recovery
 - A queued job is marked cancelled immediately.
@@ -66,8 +71,8 @@ These are ordinary modules/functions inside one analysis service. Scores are est
 - Keep provider keys and processor shared secrets server-side in secrets.
 - The current metadata adapters never fetch user-submitted platform URLs; they call fixed official API hosts. Any future media-file URL fetch must independently validate every redirect and DNS answer, pin the resolved public IP to the connection, and reject private/reserved/link-local/cloud-metadata destinations.
 - Bound source duration, file size, scratch usage and processing time.
-- Keep R2 objects private and use short-lived authorized download URLs.
+- Keep R2 objects private and stream clip downloads only after an owner-scoped D1 lookup through the authenticated Worker API.
 - Use only media you own or have permission to process; do not bypass platform access controls.
 
 ## Build order
-UI shell → auth and D1 job lifecycle → processor polling/lease smoke test → authorized VOD ingestion → transcription and candidate detection → FFmpeg rendering → private R2 publishing → live capture for authorized sources.
+UI shell → auth and D1 job lifecycle → processor polling/lease smoke test → authorized VOD ingestion → local transcription → deterministic candidate analysis → lease-bound FFmpeg rendering → private R2 publishing and D1 registration → UI integration and QA → optional semantic refinement → live capture for authorized sources.
