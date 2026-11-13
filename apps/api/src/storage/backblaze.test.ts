@@ -51,7 +51,7 @@ describe("BackblazeBucket object operations", () => {
   });
 
   it("accepts a matching byte-range response", async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const requestHeaders = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
       expect(requestHeaders.get("range")).toBe("bytes=8-11");
       return new Response(new Uint8Array(4), {
@@ -70,7 +70,8 @@ describe("BackblazeBucket object operations", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(input instanceof Request ? input.url : String(input));
       const method = init?.method ?? (input instanceof Request ? input.method : "GET");
-      requests.push({ method, url, body: init?.body ?? null });
+      const requestBody = init?.body ?? (input instanceof Request ? await input.clone().text() : null);
+      requests.push({ method, url, body: requestBody });
       if (method === "POST" && url.searchParams.has("uploads")) {
         return new Response("<InitiateMultipartUploadResult><UploadId>upload-123</UploadId></InitiateMultipartUploadResult>");
       }
