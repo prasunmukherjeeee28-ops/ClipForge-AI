@@ -24,7 +24,7 @@ Authenticated JSON API behind Cloudflare Access. Every user-facing resource quer
 - `POST /api/jobs/cancel-all` — request cancellation of all active jobs for the current user.
 - `GET /api/clips` — list the current user's clip metadata.
 
-Only supported HTTPS YouTube and Twitch URL hostnames are accepted at submission time. The processor then parses one specific video/VOD ID and calls only fixed official metadata API endpoints: YouTube Data API `videos.list`, or Twitch Helix `videos` using a server-side app access token. It does not fetch the submitted platform page or retrieve a media playback URL. Source fields (`sourceId`, `sourceType`, title, duration, publication time and verification time) are saved using the lease-protected source metadata callback. Public metadata does not establish ownership or grant a downloadable media asset. Until creator-authorized media-file ingestion is added, a VOD job stops with `authorized_media_asset_required`; active/upcoming live sources stop with `live_source_not_supported`.
+Only supported HTTPS YouTube and Twitch URL hostnames are accepted at submission time. The processor then parses one specific video/VOD ID and calls only fixed official metadata API endpoints: YouTube Data API `videos.list`, or Twitch Helix `videos` using a server-side app access token. It does not fetch the submitted platform page or retrieve a media playback URL. Source fields (`sourceId`, `sourceType`, title, duration, publication time and verification time) are saved using the lease-protected source metadata callback. Public metadata does not establish ownership or grant a downloadable media asset. The account owner must upload an original/export or another provider-approved file they have permission to process. A metadata-verified VOD with a ready attached asset transitions to `review` / `source_ready`; active/upcoming live sources stop with `live_source_not_supported`. The uploaded file is not yet FFprobe-validated or processed.
 
 ## Processor machine API
 
@@ -40,7 +40,7 @@ Every `POST /internal/processor/*` request must include:
 
 Routes:
 - `POST /internal/processor/ping` with `{}`: authenticated connectivity check.
-- `POST /internal/processor/claim` with `{"workerId":"processor-1"}`: recover expired leases, then atomically claim the oldest queued job. Returns null if idle; otherwise returns the job and a one-time lease token.
+- `POST /internal/processor/claim` with `{"workerId":"processor-1"}`: recover expired leases, then atomically claim the oldest queued job that has a ready source asset attached by its owner. Returns null if idle; otherwise returns the job (including `sourceAssetId`) and a one-time lease token.
 - `POST /internal/processor/heartbeat` with `{"jobId":"...","leaseId":"...","leaseToken":"..."}`: extends the 90-second lease and returns whether cancellation was requested.
 - `POST /internal/processor/progress` with lease fields plus `stage` and `progress` (integer 0–99): updates stage/progress only for the active lease and while cancellation is not requested.
 - `POST /internal/processor/source-metadata` with lease fields plus `sourceId`, `sourceType` (`video` or `live`), `title`, optional `durationSeconds` (0–604800) and optional ISO `publishedAt`: persists verified metadata only for the active unexpired lease. It cannot change another user's job or a cancellation-requested job.
@@ -51,10 +51,10 @@ Routes:
 The Worker stores only SHA-256 of the lease token. A lease is valid only for its job and lease ID. Expired processing jobs are requeued until `max_attempts` is reached, then marked failed. Expired jobs with a cancellation request become cancelled. The initial Python client is a connectivity/claim smoke test and releases jobs; it does not process media.
 
 ## Job states
-`queued` → `processing` → `review` → `completed`; failures and cancellation transition to `failed` or `cancelled`. A processing job can expose stage `cancellation_requested` until the worker acknowledges cancellation or its lease expires.
+`review` / `awaiting_source_asset` → `queued` (ready asset attached) → `processing` → `review` / `source_ready` (metadata verified). Later media-analysis and rendering states are not implemented yet. Failures and cancellation transition to `failed` or `cancelled`. A processing job can expose stage `cancellation_requested` until the worker acknowledges cancellation or its lease expires.
 
 ## Infrastructure status
-R2 is bound privately but media upload/signing and clip download routes remain future work. No Cloudflare resources are created or deployed by the code changes.
+Private R2 multipart source upload is implemented in code but has not been deployed or exercised against a live bucket. Processor-side R2 retrieval, FFprobe validation, clip output storage/signing and frontend upload integration remain future work. No Cloudflare resources are created or deployed by the code changes.
 
 ## Security rules
 - Resource IDs are not permissions; authorize every user-facing request by authenticated user ID.
@@ -77,7 +77,8 @@ A URL job is created in `review` with stage `awaiting_source_asset`. It cannot b
 - `GET /api/source-assets/:assetId` returns the authenticated user's asset state and uploaded part numbers, allowing the client to resume missing parts.
 - `POST /api/source-assets/:assetId/complete` finalizes only when every expected part exists and all part sizes match.
 - `POST /api/jobs/:jobId/source-asset` attaches a ready asset only when the asset owner and job owner are the same. Each asset can be attached to at most one job. This transitions the job to `queued`.
-- `GET /api/source-assets` lists only the authenticated user's assets. `DELETE /api/source-assets/:assetId` removes unattached or inactive assets.
+- `GET /api/source-assets` lists only the authenticated user's assets.
+- `DELETE /api/source-assets/:assetId` atomically reserves deletion only if no active job is attached and no part upload/finalization is running. A `deleting` asset cannot be attached to a job; failed storage cleanup can be retried.
 
 Limits are 2 GiB per file and 8 GiB per account across uploading/ready source assets. R2 objects use server-generated owner-scoped keys. The processor claims only jobs with a ready, owner-matched source asset; after official metadata confirms a VOD, `POST /internal/processor/source-ready` moves the job to `review` / `source_ready` and clears its lease. Live/upcoming sources remain unsupported by the VOD pipeline.
 
