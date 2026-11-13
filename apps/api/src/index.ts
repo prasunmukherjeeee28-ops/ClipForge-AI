@@ -391,7 +391,7 @@ app.post("/api/source-assets", async (c) => {
 
   try {
     const inserted = await c.env.DB.prepare(
-      "INSERT INTO source_assets (id, user_id, object_key, filename, content_type, size_bytes, upload_id) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7 WHERE COALESCE((SELECT SUM(size_bytes) FROM source_assets WHERE user_id = ?2 AND status IN ('uploading','ready')), 0) + ?6 <= ?8",
+      "INSERT INTO source_assets (id, user_id, object_key, filename, content_type, size_bytes, upload_id) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7 WHERE COALESCE((SELECT SUM(size_bytes) FROM source_assets WHERE user_id = ?2 AND status IN ('uploading','finalizing','ready','deleting')), 0) + ?6 <= ?8",
     ).bind(
       assetId, user.id, objectKey, filename, contentType, sizeBytes, multipart.uploadId, MAX_SOURCE_ASSET_USER_BYTES,
     ).run();
