@@ -136,4 +136,4 @@ def test_run_once_completes_claimed_vod_through_private_clip_registration(monkey
     assert events.index("source_download") < events.index("transcription_ready")
     assert events.index("transcription_ready") < events.index("clip_upload_begin") < events.index("clips_ready")
     assert events[-1] == "close"
-    assert not (tmp_path / "scratch" / "users" / user_id / job_id / "source.upload").exists()
+    assert not (tmp_path / "scratch" / "users" / user_id / job_id).exists()
