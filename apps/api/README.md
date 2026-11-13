@@ -64,6 +64,26 @@ The Worker serves both the Vite frontend (`apps/web/dist`) and the Hono API from
 
 Do not deploy with placeholder Access settings. Keep Backblaze B2 object storage private. B2 buckets are versioned: a normal S3 `DeleteObject` creates a delete marker rather than immediately erasing every older version. Configure a lifecycle rule to expire noncurrent versions after a short retention period (for example, one day) and abort incomplete multipart uploads after a short period. Treat app-level deletion as immediately hidden from users, but not as immediate physical erasure until the lifecycle policy runs. Never put credentials in this file, `wrangler.toml`, GitHub source, frontend variables or a committed environment file.
 
+## Deployment preflight
+
+Before deployment, replace every placeholder in `wrangler.toml` with the real Cloudflare Access hostname, application audience, exactly two distinct allowed email addresses, and the Backblaze B2 region, endpoint and private bucket name. The deploy command runs `scripts/deploy-preflight.mjs` first and stops before building or deploying if those values are missing, placeholders, malformed, or point at the wrong D1 database. The check validates configuration syntax; it cannot prove that the Access application or B2 bucket exists.
+
+The static configuration check runs automatically:
+
+```bash
+npm run deploy
+```
+
+After the first Worker deployment, install the three required secrets without putting their values in source control:
+
+```bash
+npx wrangler secret put PROCESSOR_SHARED_SECRET
+npx wrangler secret put B2_ACCESS_KEY_ID
+npx wrangler secret put B2_SECRET_ACCESS_KEY
+npm run verify:secrets
+```
+
+`verify:secrets` checks only secret names and never prints their values. Set the same `PROCESSOR_SHARED_SECRET` in the isolated processor host environment. Do not start the processor or accept media jobs until the private B2 bucket, restricted B2 key, Access policy and all three Worker secrets are configured and independently verified.
 ## Processor deployment
 
 The separate Python processor has its own Docker image and single-instance Compose service. See `services/processor/README.md`. The processor is deliberately not deployed as a Cloudflare Worker because FFmpeg and faster-whisper require a normal Linux runtime and persistent local scratch/model storage.
