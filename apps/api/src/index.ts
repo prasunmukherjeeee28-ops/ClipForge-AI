@@ -1147,7 +1147,7 @@ app.get("/api/clips/:clipId/preview", async (c) => {
     });
   }
 
-  const match = /^bytes=(\\d*)-(\\d*)$/.exec(rangeHeader);
+  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader);
   if (!match || (!match[1] && !match[2]) || metadata.size <= 0) {
     return new Response(null, {
       status: 416,
