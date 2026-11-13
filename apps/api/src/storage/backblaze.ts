@@ -46,9 +46,11 @@ export class BackblazeBucket {
 
   constructor(private readonly config: ObjectStorageConfig) {
     this.base = new URL(config.endpoint.endsWith("/") ? config.endpoint : config.endpoint + "/");
+    const expectedHost = `s3.${config.region}.backblazeb2.com`;
     if (this.base.protocol !== "https:" || this.base.username || this.base.password ||
-        this.base.search || this.base.hash || !this.base.hostname) {
-      throw new Error("Object storage endpoint must be a clean HTTPS endpoint.");
+        this.base.pathname !== "/" || this.base.search || this.base.hash ||
+        this.base.port || this.base.hostname.toLowerCase() !== expectedHost) {
+      throw new Error("B2 endpoint must be the HTTPS regional S3 endpoint without a bucket or path.");
     }
     if (!/^[a-z0-9][a-z0-9.-]{4,48}[a-z0-9]$/.test(config.bucket)) {
       throw new Error("Invalid Backblaze B2 bucket name.");
