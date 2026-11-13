@@ -1,6 +1,6 @@
 # ClipForge Python Processor
 
-D1-backed single-job processor for private, creator-authorized VOD files. It verifies official YouTube/Twitch metadata, streams the attached private R2 source through a lease-scoped endpoint, validates media, extracts normalized audio, creates a local timestamped speech transcript, and builds an explainable shortlist of candidate moments from audio and transcript signals. It is not yet a clip generator.
+D1-backed single-job processor for private, creator-authorized VOD files. It verifies official YouTube/Twitch metadata, streams the attached private R2 source through a lease-scoped endpoint, validates media, extracts normalized audio, creates a local timestamped speech transcript, builds an explainable shortlist of candidate moments from audio and transcript signals, and renders selected candidates as private vertical MP4 clips. A real Cloudflare/R2 deployment and live integration smoke test are still required.
 
 ## Current capabilities
 
@@ -19,6 +19,10 @@ D1-backed single-job processor for private, creator-authorized VOD files. It ver
 - Uses a provider-neutral Pydantic scoring contract. The current local adapter is deterministic and makes no LLM calls, invented category labels or title suggestions.
 - Sends up to 50 candidates through a lease-scoped callback; D1 persists timestamps, transcript excerpts, 0–100 scores, four feature signals and rationale. Each candidate begins with category `unknown` until semantic classification is implemented.
 - Exposes owner-scoped candidate retrieval and review-status endpoints. The processor keeps the lease through candidate analysis and releases it only when candidate persistence succeeds.
+- Claims selected clip candidates under a separate 90-second clip lease, reloads the original authorized source from private R2, and renders H.264/AAC MP4 with optional word-timestamp ASS captions.
+- Fits the complete gameplay/source frame into a 9:16 foreground over a blurred, scaled background, avoiding automatic center-cropping of gameplay.
+- Validates rendered output with FFprobe, caps clips at 120 seconds and 512 MiB, uploads in 8 MiB private R2 multipart parts, and marks the clip ready only after completion and size verification.
+- Owner-scoped UI/API can track render progress, cancel or retry failures, and stream ready MP4 downloads.
 - Renews the 90-second lease every 25 seconds and stops work when cancellation or lease loss is detected.
 
 The user must upload an original/export or another provider-approved file they have permission to process. A public YouTube or Twitch URL and official metadata do not prove permission to process a media file. The worker does not scrape platform pages, bypass access controls or download video bytes from YouTube/Twitch.
@@ -61,6 +65,7 @@ Media-processing options:
 - `PROCESSOR_STT_LANGUAGE` (optional language code; empty means automatic detection)
 - `PROCESSOR_STT_CHUNK_TIMEOUT_SECONDS` (default 1800; allowed 60–3600)
 - `PROCESSOR_MOMENTS_TIMEOUT_SECONDS` (default 1800; allowed 60–3600)
+- `PROCESSOR_RENDER_TIMEOUT_SECONDS` (default 900; allowed 60–3600)
 
 The source upload API caps input files at 2 GiB and source storage at 8 GiB per account. The processor caps normalized WAV output at 1.5 GB. Moment analysis currently caps transcript JSON at 100 MB and persists at most 50 shortlisted candidates per job. FFmpeg is invoked with argument arrays, never through a shell, with a bounded timeout and thread count.
 
@@ -110,7 +115,7 @@ Do not run multiple copies of this one-job worker simultaneously. The worker han
 10. The local moment-analysis module reads the retained WAV and transcript in an isolated subprocess, calculates lightweight one-second audio features, scores overlapping multi-scale candidate windows, and applies IoU-based NMS.
 11. Up to 50 candidates, including timestamps, excerpt, score, signal breakdown and rationale, are persisted transactionally through a lease-scoped Worker callback. The job transitions to `review` / `moments_detected`; the account owner can retrieve and mark candidates through authenticated API routes.
 
-Audio, transcript and candidate report artifacts are not yet copied to R2. Keep processor volumes persistent and private until the renderer consumes them. Configure encryption-at-rest, backup and retention at the host/storage layer. Automated intermediate-artifact cleanup is a later task.
+Audio, transcript and candidate report artifacts remain on the private processor volume so a render worker can reuse the transcript and refetch the original source from R2. Configure encryption-at-rest, backup and retention at the host/storage layer. Automated intermediate-artifact cleanup is still needed; the renderer currently removes its local source and output artifacts after a successful upload.
 
 ## Request signing
 
@@ -128,11 +133,10 @@ Each request uses a fresh random nonce. The Worker stores only its SHA-256 hash 
 
 ## Next implementation steps
 
-1. Connect the candidate review API to the existing editor/library UI and test the two-account access boundary.
-2. Add optional provider adapters for semantic payoff verification only after local heuristic quality is measured; benchmark acoustic event detection before adding a model such as YAMNet.
-3. Add FFmpeg 9:16 rendering, subtitle burn-in, private clip storage and idempotent clip registration.
-4. Move intermediate audio, transcripts and candidate artifacts to lifecycle-managed private R2 storage and add automated retention/cleanup.
-5. Connect dashboard, library, editor and job-progress screens to real API data.
-6. Add live-stream processing after the VOD pipeline is stable.
+1. Run end-to-end integration against a real private R2 bucket and processor host with FFmpeg/FFprobe installed; test multipart recovery, job cancellation and the two-user isolation boundary.
+2. Move intermediate audio, transcripts and candidate artifacts to lifecycle-managed private R2 storage and add automated retention/cleanup.
+3. Add optional provider adapters for semantic payoff verification only after local heuristic quality is measured; benchmark acoustic event detection before adding a model such as YAMNet.
+4. Connect dashboard, settings and live-radar screens to real API data; the upload, candidate review and clip library now use real APIs.
+5. Add live-stream processing after the VOD pipeline is stable.
 
 The code and tests do not prove that a live Cloudflare account, R2 bucket or production processor host is configured correctly. No Cloudflare resources are created or deployed by these changes.
