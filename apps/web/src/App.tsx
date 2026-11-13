@@ -3,7 +3,6 @@ import { AppShell } from "@/components/layout/app-shell";
 import { DashboardPage } from "@/features/dashboard/dashboard-page";
 import { UploadPage } from "@/features/upload/upload-page";
 import { LibraryPage } from "@/features/library/library-page";
-import { EditorPage } from "@/features/editor/editor-page";
 import { CandidateReviewPage } from "@/features/editor/candidate-review-page";
 import { LiveRadarPage } from "@/features/live-radar/live-radar-page";
 import { SettingsPage } from "@/features/settings/settings-page";
@@ -36,7 +35,6 @@ export default function App() {
           <Route index element={<DashboardPage />} />
           <Route path="upload" element={<UploadPage />} />
           <Route path="library" element={<LibraryPage />} />
-          <Route path="editor" element={<EditorPage />} />
           <Route path="jobs/:jobId/candidates" element={<CandidateReviewPage />} />
           <Route path="live-radar" element={<LiveRadarPage />} />
           <Route path="settings" element={<SettingsPage />} />
