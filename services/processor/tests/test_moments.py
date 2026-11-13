@@ -179,3 +179,47 @@ def test_candidate_windows_never_extend_past_fractional_audio_duration(tmp_path:
     candidates = detect_moments(audio, transcript, window_seconds=(10,), step_seconds=1, score_threshold=0)
     assert candidates
     assert all(item.end_seconds <= 15.5 for item in candidates)
+
+
+def test_visual_evidence_blends_into_candidate_score_and_explanation() -> None:
+    from types import SimpleNamespace
+    from clipforge_processor.moments import apply_visual_evidence
+
+    candidate = MomentCandidate(
+        start_seconds=10, end_seconds=25, score=0.6,
+        acoustic_salience=0.5, transcript_velocity=0.6,
+        narrative_arc=0.7, novelty=0.4, word_count=30,
+        marker_count=2, rationale="audio and transcript cues",
+    )
+    evidence = SimpleNamespace(
+        visual_salience=0.9,
+        motion_salience=0.8,
+        scene_change_salience=0.7,
+        object_presence=0.6,
+        object_transition=0.5,
+        detected_object_count=4,
+        object_classes=("car", "person"),
+    )
+
+    enriched = apply_visual_evidence([candidate], {(10.0, 25.0): evidence})[0]
+
+    assert enriched.score == pytest.approx(0.654)
+    assert enriched.visual_salience == 0.9
+    assert enriched.detected_object_count == 4
+    assert enriched.object_classes == ("car", "person")
+    assert "high gameplay motion" in enriched.rationale
+    assert "visual scene change" in enriched.rationale
+    assert "detected car/person" in enriched.rationale
+    assert enriched.as_dict()["signals"]["visualSalience"] == 0.9
+
+
+def test_apply_visual_evidence_leaves_unanalyzed_candidates_unchanged() -> None:
+    from clipforge_processor.moments import apply_visual_evidence
+
+    candidate = MomentCandidate(
+        start_seconds=10, end_seconds=25, score=0.6,
+        acoustic_salience=0.5, transcript_velocity=0.6,
+        narrative_arc=0.7, novelty=0.4, word_count=30,
+        marker_count=2, rationale="audio and transcript cues",
+    )
+    assert apply_visual_evidence([candidate], {}) == [candidate]
