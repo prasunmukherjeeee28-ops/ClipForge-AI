@@ -323,7 +323,7 @@ def detect_moments(
             narrative = 0.65 * coverage + 0.35 * peak_alignment
 
             if marker_count:
-                rarity = _range_sum(novelty_prefix, start, end)
+                rarity = _range_sum(novelty_prefix, start, end_index)
                 novelty = min(1.0, rarity / max(1.0, marker_count))
             else:
                 novelty = 0.0
