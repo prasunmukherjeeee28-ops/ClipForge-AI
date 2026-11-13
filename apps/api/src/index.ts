@@ -459,8 +459,8 @@ app.put("/api/source-assets/:assetId/parts/:partNumber", async (c) => {
     "DELETE FROM source_asset_parts WHERE asset_id = ?1 AND part_number = ?2 AND status = 'uploading' AND updated_at <= datetime('now', '-15 minutes')",
   ).bind(assetId, partNumber).run();
   const reservation = await c.env.DB.prepare(
-    "INSERT INTO source_asset_parts (asset_id, part_number, status, size_bytes) VALUES (?1, ?2, 'uploading', ?3) ON CONFLICT(asset_id, part_number) DO NOTHING",
-  ).bind(assetId, partNumber, expectedBytes).run();
+    "INSERT INTO source_asset_parts (asset_id, part_number, status, size_bytes) SELECT ?1, ?2, 'uploading', ?3 WHERE EXISTS (SELECT 1 FROM source_assets WHERE id = ?1 AND user_id = ?4 AND status = 'uploading') ON CONFLICT(asset_id, part_number) DO NOTHING",
+  ).bind(assetId, partNumber, expectedBytes, c.get("user").id).run();
   if (!reservation.meta.changes) {
     return jsonError(c, "This part is already uploaded or currently being stored. Check upload status before retrying.", 409);
   }
@@ -505,23 +505,40 @@ app.post("/api/source-assets/:assetId/complete", async (c) => {
     }
   }
 
+  const finalizing = await c.env.DB.prepare(
+    "UPDATE source_assets SET status = 'finalizing', updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND user_id = ?2 AND status = 'uploading' AND upload_id = ?3 AND NOT EXISTS (SELECT 1 FROM source_asset_parts WHERE asset_id = ?1 AND status = 'uploading')",
+  ).bind(assetId, c.get("user").id, asset.uploadId).run();
+  if (!finalizing.meta.changes) {
+    return jsonError(c, "An upload part is still in progress or this asset is no longer finalizable.", 409);
+  }
+
   let storedObject: R2Object;
   try {
     storedObject = await c.env.MEDIA.resumeMultipartUpload(asset.objectKey, asset.uploadId)
       .complete(parts.results.map((part) => ({ partNumber: part.partNumber, etag: part.etag })));
   } catch {
-    return jsonError(c, "R2 could not finalize this upload. Check its parts and retry.", 409);
+    // A network failure can happen after R2 finalized the object. Detect that
+    // case before reopening the multipart upload for a safe client retry.
+    const existingObject = await c.env.MEDIA.head(asset.objectKey);
+    if (existingObject && existingObject.size === asset.sizeBytes) {
+      storedObject = existingObject;
+    } else {
+      await c.env.DB.prepare(
+        "UPDATE source_assets SET status = 'uploading', updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND user_id = ?2 AND status = 'finalizing' AND upload_id = ?3",
+      ).bind(assetId, c.get("user").id, asset.uploadId).run();
+      return jsonError(c, "R2 could not finalize this upload. Check its parts and retry.", 409);
+    }
   }
   if (storedObject.size !== asset.sizeBytes) {
     await c.env.MEDIA.delete(asset.objectKey);
     await c.env.DB.prepare(
-      "UPDATE source_assets SET status = 'failed', upload_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND user_id = ?2 AND status = 'uploading'",
+      "UPDATE source_assets SET status = 'failed', upload_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND user_id = ?2 AND status = 'finalizing'",
     ).bind(assetId, c.get("user").id).run();
     return jsonError(c, "Stored file size did not match the declared size; upload rejected.", 409);
   }
 
   const completed = await c.env.DB.prepare(
-    "UPDATE source_assets SET status = 'ready', upload_id = NULL, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND user_id = ?2 AND status = 'uploading' AND upload_id = ?3",
+    "UPDATE source_assets SET status = 'ready', upload_id = NULL, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND user_id = ?2 AND status = 'finalizing' AND upload_id = ?3",
   ).bind(assetId, c.get("user").id, asset.uploadId).run();
   if (!completed.meta.changes) return jsonError(c, "Upload state changed while finalizing. Refresh the asset status.", 409);
   return c.json({ assetId, status: "ready", sizeBytes: storedObject.size });
@@ -529,28 +546,42 @@ app.post("/api/source-assets/:assetId/complete", async (c) => {
 
 app.delete("/api/source-assets/:assetId", async (c) => {
   const assetId = c.req.param("assetId");
+  const userId = c.get("user").id;
+  // Reserve deletion atomically before touching R2. Attachment and upload
+  // completion both require their own source_assets state predicates, so this
+  // closes the race where a job could attach an object while it was deleted.
   const asset = await c.env.DB.prepare(
-    "SELECT object_key AS objectKey, upload_id AS uploadId, status FROM source_assets WHERE id = ?1 AND user_id = ?2",
-  ).bind(assetId, c.get("user").id).first<{ objectKey: string; uploadId: string | null; status: string }>();
-  if (!asset) return jsonError(c, "Source asset not found.", 404);
-
-  const activeJob = await c.env.DB.prepare(
-    "SELECT id FROM jobs WHERE source_asset_id = ?1 AND status NOT IN ('failed','cancelled','completed') LIMIT 1",
-  ).bind(assetId).first();
-  if (activeJob) return jsonError(c, "This source file is attached to an active job and cannot be deleted yet.", 409);
+    "UPDATE source_assets SET status = 'deleting', updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND user_id = ?2 AND status IN ('uploading','ready','failed','deleting') AND NOT EXISTS (SELECT 1 FROM jobs WHERE source_asset_id = ?1 AND status NOT IN ('failed','cancelled','completed')) AND NOT EXISTS (SELECT 1 FROM source_asset_parts WHERE asset_id = ?1 AND status = 'uploading') RETURNING object_key AS objectKey, upload_id AS uploadId",
+  ).bind(assetId, userId).first<{ objectKey: string; uploadId: string | null }>();
+  if (!asset) {
+    const exists = await c.env.DB.prepare(
+      "SELECT id FROM source_assets WHERE id = ?1 AND user_id = ?2",
+    ).bind(assetId, userId).first();
+    if (!exists) return jsonError(c, "Source asset not found.", 404);
+    return jsonError(c, "This source asset is attached to an active job or has an upload part/finalization in progress.", 409);
+  }
 
   try {
-    if (asset.status === "uploading" && asset.uploadId) {
-      await c.env.MEDIA.resumeMultipartUpload(asset.objectKey, asset.uploadId).abort();
-    } else if (asset.status === "ready") {
+    if (asset.uploadId) {
+      try {
+        await c.env.MEDIA.resumeMultipartUpload(asset.objectKey, asset.uploadId).abort();
+      } catch {
+        // If an earlier retry already aborted it, no completed object exists.
+        const existingObject = await c.env.MEDIA.head(asset.objectKey);
+        if (existingObject) throw new Error("Multipart upload cleanup is incomplete.");
+      }
+    } else {
+      // R2 delete is safe to repeat if a previous cleanup succeeded but the
+      // D1 row deletion failed.
       await c.env.MEDIA.delete(asset.objectKey);
     }
   } catch {
     return jsonError(c, "Source storage could not be cleaned up. Retry deletion later.", 409);
   }
-  await c.env.DB.prepare(
-    "DELETE FROM source_assets WHERE id = ?1 AND user_id = ?2",
-  ).bind(assetId, c.get("user").id).run();
+  const removed = await c.env.DB.prepare(
+    "DELETE FROM source_assets WHERE id = ?1 AND user_id = ?2 AND status = 'deleting'",
+  ).bind(assetId, userId).run();
+  if (!removed.meta.changes) return jsonError(c, "Source asset cleanup is pending. Retry deletion later.", 409);
   return c.json({ assetId, deleted: true });
 });
 
