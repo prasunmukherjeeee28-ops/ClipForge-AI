@@ -216,3 +216,129 @@ def test_transcription_ready_rejects_stale_expired_cancelled_and_wrong_owner() -
 
     for job_id in ("stale", "expired", "cancelled", "wrong-owner"):
         assert db.execute(sql, transcription_ready_values(job_id)).fetchone() is None
+
+
+def moments_route_section() -> str:
+    marker = 'app.post("/internal/processor/moments-ready"'
+    return API_SOURCE.split(marker, 1)[1].split('\napp.post(', 1)[0]
+
+
+def moments_sql(fragment: str) -> str:
+    for line in moments_route_section().splitlines():
+        match = re.search(r'^\s+"(.*)",\s*$', line)
+        if match and fragment in match.group(1):
+            return match.group(1)
+    raise AssertionError(f"Could not find moments SQL containing {fragment!r}")
+
+
+def set_transcript_ready(db: sqlite3.Connection, job_id: str = "job-1") -> None:
+    db.execute(
+        "UPDATE jobs SET transcript_verified_at = CURRENT_TIMESTAMP, media_duration_seconds = 125.5 WHERE id = ?",
+        (job_id,),
+    )
+
+
+def moments_values(job_id: str = "job-1", generation_id: str = "a" * 32) -> tuple[object, ...]:
+    return (generation_id, job_id, "lease-1", "hash-1")
+
+
+def test_moments_callback_sql_persists_candidates_then_releases_lease() -> None:
+    db = make_db()
+    add_asset(db, "asset-1", "user-1")
+    add_job(db, "job-1", "user-1", "asset-1")
+    set_transcript_ready(db)
+
+    generation_id = "a" * 32
+    marker = db.execute(
+        moments_sql("SET candidate_generation_id"),
+        moments_values(generation_id=generation_id),
+    )
+    assert marker.rowcount == 1
+
+    delete = db.execute(
+        moments_sql("DELETE FROM candidates"),
+        ("job-1", generation_id, "lease-1", "hash-1"),
+    )
+    assert delete.rowcount == 0
+
+    insert = db.execute(
+        moments_sql("INSERT INTO candidates"),
+        (
+            "candidate-1", "job-1", 12.0, 42.0, "No way, let's go!",
+            91.0, generation_id, "audio energy change, reaction phrase",
+            '{"acousticSalience":0.9,"transcriptVelocity":0.8,"narrativeArc":0.7,"novelty":0.6}',
+            "lease-1", "hash-1",
+        ),
+    )
+    assert insert.rowcount == 1
+
+    finish = db.execute(
+        moments_sql("stage = 'moments_detected'"),
+        (generation_id, "job-1", "lease-1", "hash-1"),
+    )
+    assert finish.rowcount == 1
+
+    row = db.execute(
+        "SELECT status, stage, progress, candidate_generation_id, lease_id FROM jobs WHERE id = 'job-1'"
+    ).fetchone()
+    assert tuple(row) == ("review", "moments_detected", 75, generation_id, None)
+    candidate = db.execute(
+        "SELECT start_seconds, end_seconds, score, category, rationale, signals_json FROM candidates WHERE id = 'candidate-1'"
+    ).fetchone()
+    assert tuple(candidate) == (
+        12.0, 42.0, 91.0, "unknown",
+        "audio energy change, reaction phrase",
+        '{"acousticSalience":0.9,"transcriptVelocity":0.8,"narrativeArc":0.7,"novelty":0.6}',
+    )
+
+
+def test_moment_candidate_insert_requires_current_owner_lease_and_transcript() -> None:
+    db = make_db()
+    add_asset(db, "asset-1", "user-1")
+    add_asset(db, "friend-asset", "user-2")
+    add_job(db, "job-1", "user-1", "asset-1")
+    set_transcript_ready(db)
+    insert = moments_sql("INSERT INTO candidates")
+    values = (
+        "candidate-1", "job-1", 12.0, 42.0, "excerpt", 90.0, "b" * 32,
+        "reaction phrase", "{}", "lease-1", "hash-1",
+    )
+    assert db.execute(insert, values).rowcount == 1
+
+    db.execute("DELETE FROM candidates")
+    assert db.execute(insert, (*values[:1], *values[1:])).rowcount == 1
+    db.execute("DELETE FROM candidates")
+    assert db.execute(insert, ("stale", "job-1", 12.0, 42.0, "excerpt", 90.0, "b" * 32, "reason", "{}", "stale-lease", "hash-1")).rowcount == 0
+    assert db.execute(insert, ("wrong-hash", "job-1", 12.0, 42.0, "excerpt", 90.0, "b" * 32, "reason", "{}", "lease-1", "wrong-hash")).rowcount == 0
+
+    add_job(db, "job-no-transcript", "user-1", "asset-1")
+    no_transcript = (
+        "no-transcript", "job-no-transcript", 12.0, 42.0, "excerpt", 90.0,
+        "b" * 32, "reason", "{}", "lease-1", "hash-1",
+    )
+    assert db.execute(insert, no_transcript).rowcount == 0
+
+
+def test_candidate_list_query_is_scoped_to_authenticated_owner() -> None:
+    db = make_db()
+    add_asset(db, "asset-1", "user-1")
+    add_asset(db, "asset-2", "user-2")
+    add_job(db, "job-1", "user-1", "asset-1")
+    add_job(db, "job-2", "user-2", "asset-2")
+    db.execute(
+        "INSERT INTO candidates (id, job_id, start_seconds, end_seconds, score) VALUES ('own', 'job-1', 1, 20, 80)"
+    )
+    db.execute(
+        "INSERT INTO candidates (id, job_id, start_seconds, end_seconds, score) VALUES ('friend', 'job-2', 1, 20, 90)"
+    )
+    query = None
+    for line in API_SOURCE.splitlines():
+        match = re.search(r'^\s+"(SELECT id, start_seconds AS startSeconds.*FROM candidates.*)",\s*$', line)
+        if match:
+            query = match.group(1)
+            break
+    assert query is not None
+    own = db.execute(query, ("job-1", "user-1")).fetchall()
+    wrong_owner = db.execute(query, ("job-2", "user-1")).fetchall()
+    assert [row["id"] for row in own] == ["own"]
+    assert wrong_owner == []
