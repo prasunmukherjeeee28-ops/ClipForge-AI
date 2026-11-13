@@ -31,7 +31,7 @@ flowchart TD
 - **API:** authenticate and authorize requests, create jobs, expose status and short-lived media access, and provide HMAC-authenticated processor endpoints. No heavy FFmpeg work in Workers.
 - **D1:** users, jobs, source-asset ownership/upload state, multipart part records, lease state, candidate timestamps, clip metadata, status, scores and storage keys. It is the single source of truth for job dispatch. Never store video bytes.
 - **R2:** original videos and exports; keep buckets private.
-- **Processor:** separate Python runtime handles authorized media acquisition, transcription, analysis, FFmpeg, storage and progress callbacks. It starts with one active job to protect a small CPU-only machine.
+- **Processor:** separate Python runtime handles authorized media ingestion, FFprobe validation, FFmpeg audio extraction, local CPU INT8 speech transcription, analysis, rendering, storage and progress callbacks. It starts with one active job to protect a small CPU-only machine.
 - **Job dispatch:** Python polls the Worker API. The Worker atomically claims a queued D1 row and returns a short-lived per-job lease token. Heartbeats extend the lease; expired leases are retried up to the configured attempt limit. There is no external Queue consumer in this initial architecture.
 
 ## AI modules
@@ -50,11 +50,11 @@ These are ordinary modules/functions inside one analysis service. Scores are est
 6. Processor parses the platform video/VOD ID and retrieves metadata only from the official YouTube Data API or Twitch Helix API.
 7. Active/upcoming live sources are rejected for this VOD-only milestone. Metadata does not prove that the uploaded file matches the platform source or that the user has rights; the user is responsible for providing media they are authorized to process.
 8. The processor streams the attached private R2 object only under the current owner-matched job lease, then FFprobe validates the actual video/audio streams, duration and dimensions.
-9. FFmpeg extracts mono 16 kHz PCM WAV audio to a private persistent scratch volume partitioned by user UUID and job UUID; the temporary downloaded source is removed after successful extraction. D1 stores validated probe/audio metadata and the job transitions to `review` / `audio_extracted`.
-10. Transcription and AI modules evaluate candidate moments and suggest boundaries/titles; FFmpeg renders vertical clips and subtitles.
-11. Exports are stored in private R2; metadata/status are saved in D1, and the web app provides owner-authorized playback/download.
-9. AI modules evaluate candidates and suggest boundaries/titles; FFmpeg renders vertical clips and subtitles.
-10. Exports are stored in private R2; metadata/status are saved in D1, and the web app provides owner-authorized playback/download.
+9. FFmpeg extracts mono 16 kHz PCM WAV audio to a private persistent scratch volume partitioned by user UUID and job UUID; the temporary downloaded source is removed after successful extraction.
+10. faster-whisper transcribes the WAV locally using CPU INT8 and bounded five-minute chunks. Each completed chunk is atomically checkpointed; the final transcript contains absolute segment and word timestamps. Audio and transcript text remain on the private processor volume. D1 stores only the transcript model, language, segment count, size and SHA-256 digest; the job transitions to `review` / `transcribed`.
+11. A deterministic local analysis pass computes one-second RMS/ZCR audio features, transcript word density and reaction-phrase signals. It evaluates multi-scale overlapping candidate windows, combines acoustic salience, transcript velocity, setup/peak/payoff proxies and within-VOD phrase rarity, then applies temporal IoU NMS. The first implementation uses no external model and does not infer semantic categories or titles.
+12. The next integration stores owner-scoped candidate rows and exposes candidate review. Optional provider adapters may refine only the shortlist after local quality is measured; acoustic event classifiers are deferred until benchmarked on the target processor.
+13. FFmpeg renders vertical clips and subtitles; exports are stored in private R2 and metadata/status are saved in D1 for owner-authorized playback/download.
 
 ## Cancellation and recovery
 - A queued job is marked cancelled immediately.
@@ -73,4 +73,4 @@ These are ordinary modules/functions inside one analysis service. Scores are est
 - Use only media you own or have permission to process; do not bypass platform access controls.
 
 ## Build order
-UI shell → auth and D1 job lifecycle → processor polling/lease smoke test → authorized VOD ingestion → transcription and candidate detection → FFmpeg rendering → private R2 publishing → live capture for authorized sources.
+UI shell → auth and D1 job lifecycle → processor polling/lease smoke test → authorized VOD ingestion → local transcription → deterministic candidate analysis → optional semantic refinement → FFmpeg rendering → private R2 publishing → live capture for authorized sources.
