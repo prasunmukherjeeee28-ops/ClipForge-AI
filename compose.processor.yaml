@@ -13,6 +13,8 @@ services:
     environment:
       PROCESSOR_SCRATCH_DIR: /var/lib/clipforge/scratch
       PROCESSOR_STT_MODEL_CACHE_DIR: /var/cache/clipforge/models
+      # Railway mounts volumes as root; entrypoint fixes ownership then drops privileges.
+      RAILWAY_RUN_UID: "0"
     volumes:
       - processor-scratch:/var/lib/clipforge/scratch
       - processor-model-cache:/var/cache/clipforge/models
@@ -21,6 +23,9 @@ services:
       - /tmp:rw,nosuid,nodev,noexec,size=256m
     cap_drop:
       - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
     security_opt:
       - no-new-privileges:true
     pids_limit: 128
