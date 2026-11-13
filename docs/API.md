@@ -66,3 +66,19 @@ R2 is bound privately but media upload/signing and clip download routes remain f
 - Never expose raw provider errors.
 - Use private R2 objects and short-lived authorized download URLs.
 - Process only media the account owner has permission to use; do not bypass platform access controls.
+
+
+## Authorized source asset upload
+
+A URL job is created in `review` with stage `awaiting_source_asset`. It cannot be claimed by the processor until a ready private source asset has been attached. The account owner must upload an original/export or another provider-approved file that they have permission to process. Public platform metadata is not a media download grant and does not establish ownership.
+
+- `POST /api/source-assets` initializes a multipart upload using `filename`, `contentType`, and `sizeBytes`. Supported declared formats are MP4, MOV, WebM, and Matroska. The API returns an asset ID, expected part count, and an 8 MiB part size. R2 upload IDs and object keys remain server-side.
+- `PUT /api/source-assets/:assetId/parts/:partNumber` accepts one raw binary part. `Content-Length` must equal the exact expected size for that part.
+- `GET /api/source-assets/:assetId` returns the authenticated user's asset state and uploaded part numbers, allowing the client to resume missing parts.
+- `POST /api/source-assets/:assetId/complete` finalizes only when every expected part exists and all part sizes match.
+- `POST /api/jobs/:jobId/source-asset` attaches a ready asset only when the asset owner and job owner are the same. Each asset can be attached to at most one job. This transitions the job to `queued`.
+- `GET /api/source-assets` lists only the authenticated user's assets. `DELETE /api/source-assets/:assetId` removes unattached or inactive assets.
+
+Limits are 2 GiB per file and 8 GiB per account across uploading/ready source assets. R2 objects use server-generated owner-scoped keys. The processor claims only jobs with a ready, owner-matched source asset; after official metadata confirms a VOD, `POST /internal/processor/source-ready` moves the job to `review` / `source_ready` and clears its lease. Live/upcoming sources remain unsupported by the VOD pipeline.
+
+The declared MIME type and filename are not proof of the actual file format. Processor-side R2 retrieval, FFprobe validation, audio extraction, transcription, AI moment detection, rendering, and frontend upload integration remain future work. No Cloudflare resources are created or deployed by this code change.
