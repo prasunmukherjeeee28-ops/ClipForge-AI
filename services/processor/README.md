@@ -18,7 +18,7 @@ D1-backed single-job processor for private, creator-authorized VOD files. It ver
 - Scans multi-scale 15–90 second windows using transcript word density, reaction phrases, speech coverage, acoustic changes and within-VOD phrase rarity; overlapping candidates are deduplicated with temporal IoU non-maximum suppression.
 - Uses a provider-neutral Pydantic scoring contract. Deterministic local audio/transcript heuristics always run first. When `GEMINI_API_KEY` is explicitly configured, Gemini receives only the top 40 candidate-local transcript excerpts (maximum 1,600 characters each) and numeric features; source video/audio are never uploaded. It classifies likely funny/action/fail/glitch/banter moments, refines ranking, and can suggest a concise clip title. The final score blends 65% semantic score with 35% deterministic score; malformed output, quota errors and provider timeouts fall back to local scoring.
 - Persists media, transcript verification metadata and candidate rows in D1 while retaining the active lease for rendering.
-- Selects up to three high-scoring, non-overlapping candidates, renders 1080×1920 H.264/AAC clips with timestamped burned-in subtitles, and derives conservative titles from transcript excerpts.
+- Selects up to three high-scoring, non-overlapping candidates and renders 1080×1920 H.264/AAC clips with timestamped burned-in subtitles. When a face is visible, a lightweight OpenCV detector samples the clip and the renderer follows the largest detected face with a smoothed vertical crop; if detection is unavailable or no face is found, it safely retains the full-frame blurred-background layout. The detector does not identify people or infer identity.
 - Uploads each clip to private R2 through lease-scoped multipart endpoints, verifies the stored object size, and registers clip metadata in D1 before marking the job completed.
 - Serves clips only through authenticated, owner-scoped API download responses; bucket objects remain private.
 - Renews the 90-second lease every 25 seconds and stops work when cancellation or lease loss is detected, including terminating an active FFmpeg render.
@@ -63,7 +63,7 @@ Media-processing options:
 - `PROCESSOR_STT_LANGUAGE` (optional language code; empty means automatic detection)
 - `PROCESSOR_STT_CHUNK_TIMEOUT_SECONDS` (default 1800; allowed 60–3600)
 
-The source upload API caps input files at 2 GiB and source storage at 8 GiB per account. The processor caps normalized WAV output at 1.5 GB. Moment analysis currently caps transcript JSON at 100 MB and emits at most 100 shortlisted candidates. FFmpeg is invoked with argument arrays, never through a shell, with a bounded timeout and thread count.
+The initial face tracker uses OpenCV's bundled Haar cascade, samples at up to 2 frames per second, and caps analysis at 240 frames per clip. This is a low-cost facecam/speaker-framing baseline, not a general object detector or GTA gameplay character/vehicle tracker; those require a separately benchmarked model and are not claimed as implemented yet.\n\nThe source upload API caps input files at 2 GiB and source storage at 8 GiB per account. The processor caps normalized WAV output at 1.5 GB. Moment analysis currently caps transcript JSON at 100 MB and emits at most 100 shortlisted candidates. FFmpeg is invoked with argument arrays, never through a shell, with a bounded timeout and thread count.
 
 ## Local setup
 
