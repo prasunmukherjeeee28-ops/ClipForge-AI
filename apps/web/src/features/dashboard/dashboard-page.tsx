@@ -3,7 +3,6 @@ import { Link } from "react-router-dom";
 import {
   Activity,
   AlertCircle,
-  CheckCircle2,
   Clock3,
   Download,
   HardDrive,
@@ -133,7 +132,7 @@ export function DashboardPage() {
                     </div>
                     <p className="line-clamp-2 text-xs text-zinc-300">{clip.title}</p>
                     <Badge tone={jobTone(clip.status === "ready" ? "completed" : clip.status === "failed" ? "failed" : clip.status === "rendering" ? "processing" : "queued")}>{clip.status}</Badge>
-                    {clip.status === "ready" ? <Button size="sm" variant="secondary" block onClick={() => window.location.assign(getClipDownloadUrl(clip.id))}><Download className="h-3.5 w-3.5" /> Download</Button> : null}
+                    {clip.status === "ready" ? <Button size="sm" variant="secondary" className="w-full" onClick={() => window.location.assign(getClipDownloadUrl(clip.id))}><Download className="h-3.5 w-3.5" /> Download</Button> : null}
                     {clip.status === "rendering" || clip.status === "queued" ? <Progress value={clip.progress} /> : null}
                   </div>
                 ))}
