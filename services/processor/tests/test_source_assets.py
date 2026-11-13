@@ -189,3 +189,83 @@ def test_multipart_parts_are_unique_per_asset_and_part_number() -> None:
         pass
     else:
         raise AssertionError("duplicate multipart part number was accepted")
+
+def source_asset_delete_reservation_sql() -> str:
+    marker = 'app.delete("/api/source-assets/:assetId"'
+    section = API_SOURCE.split(marker, 1)[1]
+    match = re.search(r'^\s+"(UPDATE source_assets SET [^"]+)",\s*$', section, re.MULTILINE)
+    assert match, "Could not find atomic source asset delete reservation SQL"
+    return match.group(1)
+
+
+def test_delete_reservation_closes_attach_delete_race() -> None:
+    # Deletion wins first: status changes atomically, so later attachment fails.
+    db = make_db()
+    add_asset(db, "asset-1", "user-1")
+    add_job(db, "job-1", "user-1")
+    reserve_delete = source_asset_delete_reservation_sql()
+    reserved = db.execute(reserve_delete, ("asset-1", "user-1", "asset-1")).fetchone()
+    assert reserved is not None
+    assert reserved["objectKey"] == "source-assets/user-1/asset-1/source"
+
+    attach = production_update_sql("/api/jobs/:jobId/source-asset")
+    attached = db.execute(attach, ("asset-1", "job-1", "user-1"))
+    assert attached.rowcount == 0
+    assert db.execute(
+        "SELECT status FROM source_assets WHERE id = 'asset-1'"
+    ).fetchone()["status"] == "deleting"
+
+    # Attachment wins first: deletion cannot reserve the attached active asset.
+    db = make_db()
+    add_asset(db, "asset-2", "user-1")
+    add_job(db, "job-2", "user-1")
+    attached = db.execute(attach, ("asset-2", "job-2", "user-1"))
+    assert attached.rowcount == 1
+    reserved = db.execute(reserve_delete, ("asset-2", "user-1", "asset-2")).fetchone()
+    assert reserved is None
+
+
+def test_delete_reservation_waits_for_inflight_upload_parts_and_finalization() -> None:
+    db = make_db()
+    add_asset(db, "asset-1", "user-1", status="uploading")
+    db.execute(
+        """
+        INSERT INTO source_asset_parts (asset_id, part_number, status, etag, size_bytes)
+        VALUES ('asset-1', 1, 'uploading', NULL, 8388608)
+        """
+    )
+    reserve_delete = source_asset_delete_reservation_sql()
+    blocked = db.execute(reserve_delete, ("asset-1", "user-1", "asset-1")).fetchone()
+    assert blocked is None
+
+    db.execute(
+        "UPDATE source_asset_parts SET status = 'uploaded', etag = 'etag-1' WHERE asset_id = 'asset-1'"
+    )
+    allowed = db.execute(reserve_delete, ("asset-1", "user-1", "asset-1")).fetchone()
+    assert allowed is not None
+    row = db.execute(
+        "SELECT status, upload_id FROM source_assets WHERE id = 'asset-1'"
+    ).fetchone()
+    assert tuple(row) == ("deleting", "multipart-upload")
+
+
+def test_finalizing_asset_cannot_be_reserved_for_deletion() -> None:
+    db = make_db()
+    db.execute(
+        """
+        INSERT INTO source_assets (
+            id, user_id, object_key, filename, content_type, size_bytes, status, upload_id
+        ) VALUES (
+            'asset-finalizing', 'user-1', 'source-assets/user-1/finalizing/source',
+            'source.mp4', 'video/mp4', 1024, 'finalizing', 'multipart-finalizing'
+        )
+        """
+    )
+    reserve_delete = source_asset_delete_reservation_sql()
+    result = db.execute(
+        reserve_delete, ("asset-finalizing", "user-1", "asset-finalizing")
+    ).fetchone()
+    assert result is None
+    assert db.execute(
+        "SELECT status FROM source_assets WHERE id = 'asset-finalizing'"
+    ).fetchone()["status"] == "finalizing"
