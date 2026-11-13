@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, Check, Clock3, RefreshCw, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardHeader } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -91,7 +91,7 @@ export function CandidateReviewPage() {
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <p className="text-sm font-medium text-zinc-200">Processing status</p>
-              <p className="mt-1 text-xs text-zinc-500">{job.stage.replaceAll("_", " ")}</p>
+              <p className="mt-1 text-xs text-zinc-500">{job.stage.replace(/_/g, " ")}</p>
             </div>
             <Badge tone={job.status === "failed" ? "red" : job.status === "review" ? "green" : "violet"}>
               {job.status}
