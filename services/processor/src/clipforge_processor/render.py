@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .tracking import TrackingError, detect_faces, smooth_camera_path
+
 
 MAX_TRANSCRIPT_BYTES = 100_000_000
 MAX_TRANSCRIPT_SEGMENTS = 500_000
@@ -108,6 +110,43 @@ def _filter_path(path: Path) -> str:
     return value
 
 
+def _camera_axis_expression(points: list[Any], axis: str, maximum: float) -> str:
+    values = [(point.time_seconds, point.center_x if axis == "x" else point.center_y) for point in points]
+    if not values:
+        return "0"
+    expression = f"{min(max(values[-1][1], 0.0), maximum):.2f}"
+    for index in range(len(values) - 2, -1, -1):
+        left_time, left_value = values[index]
+        right_time, right_value = values[index + 1]
+        span = max(0.001, right_time - left_time)
+        interpolated = (
+            f"({left_value:.2f}+({right_value - left_value:.2f})*"
+            f"(t-{left_time:.3f})/{span:.3f})"
+        )
+        expression = f"if(lt(t,{right_time:.3f}),{interpolated},{expression})"
+    first_time, first_value = values[0]
+    return f"if(lt(t,{first_time:.3f}),{first_value:.2f},{expression})"
+
+
+def _tracked_face_filter(source_width: int, source_height: int, points: list[Any]) -> str | None:
+    if not points or source_width < 1 or source_height < 1:
+        return None
+    # A 9:16 crop is used only when a face is consistently visible.
+    crop_width = min(source_width, round(source_height * 9 / 16))
+    crop_height = min(source_height, round(source_width * 16 / 9))
+    if crop_width < 2 or crop_height < 2:
+        return None
+    max_x = max(0, source_width - crop_width)
+    max_y = max(0, source_height - crop_height)
+    x_expr = _camera_axis_expression(points, "x", max_x)
+    y_expr = _camera_axis_expression(points, "y", max_y)
+    return (
+        f"crop={crop_width}:{crop_height}:"
+        f"x='{x_expr}':y='{y_expr}',"
+        "scale=1080:1920:flags=bilinear"
+    )
+
+
 def render_vertical_clip(
     source_path: Path,
     transcript_path: Path,
@@ -158,13 +197,45 @@ def render_vertical_clip(
             f"subtitles=filename='{_filter_path(captions_path)}':"
             "force_style='FontName=Arial,FontSize=18,Outline=2,Shadow=1,Alignment=2,MarginV=180'"
         )
-        filter_complex = (
-            "[0:v]split=2[background][foreground];"
-            "[background]scale=1080:1920:force_original_aspect_ratio=increase,"
-            "crop=1080:1920,boxblur=24:12[bg];"
-            "[foreground]scale=1080:1920:force_original_aspect_ratio=decrease[fg];"
-            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,fps=30,{subtitles_filter}[v]"
-        )
+        tracked_filter: str | None = None
+        try:
+            frame_width, frame_height, face_observations = detect_faces(
+                source_path,
+                start_seconds=start_seconds,
+                end_seconds=end_seconds,
+                sample_interval_seconds=0.5,
+                max_samples=240,
+            )
+            if face_observations:
+                crop_width = min(frame_width, round(frame_height * 9 / 16))
+                crop_height = min(frame_height, round(frame_width * 16 / 9))
+                camera_path = smooth_camera_path(
+                    face_observations,
+                    frame_width=frame_width,
+                    frame_height=frame_height,
+                    clip_start=start_seconds,
+                    clip_end=end_seconds,
+                    crop_width=crop_width,
+                    crop_height=crop_height,
+                    smoothing=0.35,
+                )
+                tracked_filter = _tracked_face_filter(frame_width, frame_height, camera_path)
+        except (TrackingError, ValueError, OSError):
+            # Tracking is best-effort; preserve the full-frame layout on any issue.
+            tracked_filter = None
+
+        if tracked_filter:
+            filter_complex = (
+                f"[0:v]{tracked_filter},setsar=1,fps=30,{subtitles_filter}[v]"
+            )
+        else:
+            filter_complex = (
+                "[0:v]split=2[background][foreground];"
+                "[background]scale=1080:1920:force_original_aspect_ratio=increase,"
+                "crop=1080:1920,boxblur=24:12[bg];"
+                "[foreground]scale=1080:1920:force_original_aspect_ratio=decrease[fg];"
+                f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,fps=30,{subtitles_filter}[v]"
+            )
         command = [
             ffmpeg_binary, "-hide_banner", "-nostdin", "-y",
             "-i", str(source_path),
