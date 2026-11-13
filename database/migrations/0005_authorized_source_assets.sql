@@ -9,14 +9,15 @@ CREATE TABLE IF NOT EXISTS source_assets (
   )),
   size_bytes INTEGER NOT NULL CHECK(size_bytes BETWEEN 1 AND 2147483648),
   status TEXT NOT NULL DEFAULT 'uploading'
-    CHECK(status IN ('uploading', 'ready', 'failed')),
+    CHECK(status IN ('uploading', 'finalizing', 'ready', 'failed', 'deleting')),
   upload_id TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   completed_at TEXT,
   CHECK(
-    (status = 'uploading' AND upload_id IS NOT NULL) OR
-    (status <> 'uploading' AND upload_id IS NULL)
+    (status IN ('uploading', 'finalizing') AND upload_id IS NOT NULL) OR
+    (status IN ('ready', 'failed') AND upload_id IS NULL) OR
+    status = 'deleting'
   )
 );
 
