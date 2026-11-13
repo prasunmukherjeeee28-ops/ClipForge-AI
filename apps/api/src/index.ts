@@ -307,6 +307,11 @@ app.post("/internal/processor/transcription-ready", async (c) => {
     audioCodec?: string; audioSampleRate?: number; audioChannels?: number; audioSizeBytes?: number;
     transcriptModel?: string; transcriptLanguage?: string | null;
     transcriptSegmentCount?: number; transcriptSizeBytes?: number; transcriptSha256?: string;
+    candidates?: Array<{
+      startSeconds?: number; endSeconds?: number; score?: number;
+      signals?: { acousticSalience?: number; transcriptVelocity?: number; narrativeArc?: number; novelty?: number };
+      wordCount?: number; markerCount?: number; rationale?: string;
+    }>;
   }>(c);
   const boundedName = (value: unknown, max: number) =>
     typeof value === "string" && value.length > 0 && value.length <= max && /^[A-Za-z0-9,._+-]+$/.test(value);
@@ -314,8 +319,22 @@ app.post("/internal/processor/transcription-ready", async (c) => {
   const validLanguage = body?.transcriptLanguage === null ||
     (typeof body?.transcriptLanguage === "string" &&
       /^[a-z]{2,3}(?:-[a-z0-9]{2,8})?$/.test(body.transcriptLanguage));
+  const candidates = body?.candidates;
+  const validCandidates = Array.isArray(candidates) && candidates.length <= 100 &&
+    candidates.every((item) => {
+      const signals = item?.signals;
+      const boundedScore = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+      return typeof item.startSeconds === "number" && Number.isFinite(item.startSeconds) && item.startSeconds >= 0 &&
+        typeof item.endSeconds === "number" && Number.isFinite(item.endSeconds) && item.endSeconds > item.startSeconds &&
+        boundedScore(item.score) && !!signals &&
+        boundedScore(signals.acousticSalience) && boundedScore(signals.transcriptVelocity) &&
+        boundedScore(signals.narrativeArc) && boundedScore(signals.novelty) &&
+        Number.isSafeInteger(item.wordCount) && item.wordCount! >= 0 && item.wordCount! <= 100000 &&
+        Number.isSafeInteger(item.markerCount) && item.markerCount! >= 0 && item.markerCount! <= 100000 &&
+        typeof item.rationale === "string" && item.rationale.length <= 500;
+    });
   if (
-    !body?.jobId || !body.leaseId || !body.leaseToken ||
+    !body?.jobId || !body.leaseId || !body.leaseToken || !validCandidates ||
     !boundedName(body.container, 100) ||
     !boundedName(body.videoCodec, 50) ||
     !boundedName(body.sourceAudioCodec, 50) ||
@@ -328,22 +347,40 @@ app.post("/internal/processor/transcription-ready", async (c) => {
     !validLanguage ||
     !Number.isInteger(body.transcriptSegmentCount) || body.transcriptSegmentCount! < 0 || body.transcriptSegmentCount! > 500000 ||
     !Number.isSafeInteger(body.transcriptSizeBytes) || body.transcriptSizeBytes! < 2 || body.transcriptSizeBytes! > 100000000 ||
-    typeof body.transcriptSha256 !== "string" || !/^[a-f0-9]{64}$/.test(body.transcriptSha256)
+    typeof body.transcriptSha256 !== "string" || !/^[a-f0-9]{64}$/.test(body.transcriptSha256) ||
+    candidates.some((item) => item.endSeconds! > body.durationSeconds!)
   ) {
-    return jsonError(c, "Invalid media or transcript verification result.", 400);
+    return jsonError(c, "Invalid media, transcript, or moment-candidate result.", 400);
   }
 
   const tokenHash = await sha256Hex(body.leaseToken);
-  const job = await c.env.DB.prepare(
-    "UPDATE jobs SET media_container = ?1, media_video_codec = ?2, media_source_audio_codec = ?3, media_width = ?4, media_height = ?5, media_duration_seconds = ?6, audio_codec = ?7, audio_sample_rate = ?8, audio_channels = ?9, audio_size_bytes = ?10, media_verified_at = CURRENT_TIMESTAMP, transcript_model = ?11, transcript_language = ?12, transcript_segment_count = ?13, transcript_size_bytes = ?14, transcript_sha256 = ?15, transcript_verified_at = CURRENT_TIMESTAMP, status = 'review', stage = 'transcribed', progress = MAX(progress, 60), error_code = NULL, lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?16 AND lease_id = ?17 AND lease_token_hash = ?18 AND status = 'processing' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP AND source_type = 'video' AND source_asset_id IS NOT NULL AND EXISTS (SELECT 1 FROM source_assets WHERE source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id AND source_assets.status = 'ready') RETURNING status",
-  ).bind(
-    body.container, body.videoCodec, body.sourceAudioCodec, body.width, body.height,
-    body.durationSeconds, body.audioCodec, body.audioSampleRate, body.audioChannels,
-    body.audioSizeBytes, body.transcriptModel, body.transcriptLanguage, body.transcriptSegmentCount,
-    body.transcriptSizeBytes, body.transcriptSha256, body.jobId, body.leaseId, tokenHash,
-  ).first<{ status: "review" }>();
-  if (!job) return jsonError(c, "Lease is invalid, expired, cancelled, or no ready owner-matched source asset is attached.", 409);
-  return c.json({ ok: true, mediaReady: true, transcriptionReady: true, stage: "transcribed" });
+  const leasePredicate = "id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'processing' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP AND source_type = 'video' AND source_asset_id IS NOT NULL AND EXISTS (SELECT 1 FROM source_assets WHERE source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id AND source_assets.status = 'ready')";
+  const statements = [
+    c.env.DB.prepare(
+      `DELETE FROM moment_candidates WHERE job_id = ?1 AND EXISTS (SELECT 1 FROM jobs WHERE ${leasePredicate})`,
+    ).bind(body.jobId, body.leaseId, tokenHash),
+    ...candidates.map((item) => c.env.DB.prepare(
+      `INSERT INTO moment_candidates (id, job_id, user_id, start_seconds, end_seconds, score, acoustic_salience, transcript_velocity, narrative_arc, novelty, word_count, marker_count, rationale) SELECT ?1, jobs.id, jobs.user_id, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11 FROM jobs WHERE ${leasePredicate}`,
+    ).bind(
+      uuid(), item.startSeconds, item.endSeconds, item.score,
+      item.signals!.acousticSalience, item.signals!.transcriptVelocity,
+      item.signals!.narrativeArc, item.signals!.novelty,
+      item.wordCount, item.markerCount, item.rationale,
+      body.jobId, body.leaseId, tokenHash,
+    )),
+    c.env.DB.prepare(
+      `UPDATE jobs SET media_container = ?1, media_video_codec = ?2, media_source_audio_codec = ?3, media_width = ?4, media_height = ?5, media_duration_seconds = ?6, audio_codec = ?7, audio_sample_rate = ?8, audio_channels = ?9, audio_size_bytes = ?10, media_verified_at = CURRENT_TIMESTAMP, transcript_model = ?11, transcript_language = ?12, transcript_segment_count = ?13, transcript_size_bytes = ?14, transcript_sha256 = ?15, transcript_verified_at = CURRENT_TIMESTAMP, status = 'review', stage = 'moments_ready', progress = 70, error_code = NULL, lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE ${leasePredicate}`,
+    ).bind(
+      body.container, body.videoCodec, body.sourceAudioCodec, body.width, body.height,
+      body.durationSeconds, body.audioCodec, body.audioSampleRate, body.audioChannels,
+      body.audioSizeBytes, body.transcriptModel, body.transcriptLanguage, body.transcriptSegmentCount,
+      body.transcriptSizeBytes, body.transcriptSha256, body.jobId, body.leaseId, tokenHash,
+    ),
+  ];
+  const results = await c.env.DB.batch(statements);
+  const completed = results[results.length - 1]?.meta.changes ?? 0;
+  if (!completed) return jsonError(c, "Lease is invalid, expired, cancelled, or no ready owner-matched source asset is attached.", 409);
+  return c.json({ ok: true, mediaReady: true, transcriptionReady: true, momentsReady: true, candidateCount: candidates.length, stage: "moments_ready" });
 });
 
 app.post("/internal/processor/source-ready", async (c) => {
@@ -810,6 +847,19 @@ app.get("/api/jobs/:jobId", async (c) => {
     .first();
   if (!job) return jsonError(c, "Job not found.", 404);
   return c.json({ job });
+});
+
+app.get("/api/jobs/:jobId/moments", async (c) => {
+  const jobId = c.req.param("jobId");
+  const userId = c.get("user").id;
+  const job = await c.env.DB.prepare(
+    "SELECT id FROM jobs WHERE id = ?1 AND user_id = ?2",
+  ).bind(jobId, userId).first();
+  if (!job) return jsonError(c, "Job not found.", 404);
+  const result = await c.env.DB.prepare(
+    "SELECT id, start_seconds AS startSeconds, end_seconds AS endSeconds, score, acoustic_salience AS acousticSalience, transcript_velocity AS transcriptVelocity, narrative_arc AS narrativeArc, novelty, word_count AS wordCount, marker_count AS markerCount, rationale FROM moment_candidates WHERE job_id = ?1 AND user_id = ?2 ORDER BY score DESC, start_seconds ASC",
+  ).bind(jobId, userId).all();
+  return c.json({ candidates: result.results });
 });
 
 app.post("/api/jobs/:jobId/cancel", async (c) => {
