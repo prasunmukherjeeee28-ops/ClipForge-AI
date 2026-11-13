@@ -1,5 +1,17 @@
 const API_BASE = (import.meta.env.VITE_CLIPFORGE_API_BASE_URL ?? "").replace(/\/+$/, "");
 
+export interface CurrentUser {
+  id: string;
+  email: string;
+}
+
+export class ApiRequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
 export interface JobSubmission {
   id: string;
   status: "review";
@@ -48,11 +60,19 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       payload && typeof payload === "object" && "error" in payload
         ? payload.error?.message
         : undefined;
-    throw new Error(message || `ClipForge API request failed (${response.status}).`);
+    throw new ApiRequestError(message || `ClipForge API request failed (${response.status}).`, response.status);
   }
 
   if (payload === null) throw new Error("The ClipForge API returned an empty response.");
   return payload as T;
+}
+
+export async function getCurrentUser(): Promise<CurrentUser> {
+  const result = await request<{ user: CurrentUser }>("/api/me");
+  if (!result.user?.id || !result.user.email) {
+    throw new Error("The ClipForge API returned an incomplete account identity.");
+  }
+  return result.user;
 }
 
 export async function createSourceJob(
@@ -129,7 +149,6 @@ export async function deleteSourceAsset(assetId: string): Promise<void> {
   );
 }
 
-
 export interface MomentCandidateRecord {
   id: string;
   startSeconds: number;
@@ -150,7 +169,6 @@ export async function getJobMomentCandidates(jobId: string): Promise<MomentCandi
   );
   return result.candidates ?? [];
 }
-
 
 export interface ClipRecord {
   id: string;

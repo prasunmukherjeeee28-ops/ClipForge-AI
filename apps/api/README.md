@@ -52,7 +52,7 @@ Set `ALLOWED_EMAILS` to exactly the two intended Cloudflare Access email identit
 
 ## Cloudflare configuration
 
-The Worker config is `apps/api/wrangler.toml`. Before deploying:
+The Worker serves both the Vite frontend (`apps/web/dist`) and the Hono API from the same origin using Worker Static Assets. This keeps Cloudflare Access session handling same-origin; the API's public base URL can remain empty in the web build. `npm run deploy` in `apps/api` builds the frontend first, then deploys the Worker. Before deploying:
 
 1. Create or select the D1 database named `clipforge-db`, then confirm its ID matches `database_id` in the config.
 2. Enable R2 and create a private bucket named `clipforge-private-media` (do not enable public access or an `r2.dev` URL).
@@ -60,7 +60,7 @@ The Worker config is `apps/api/wrangler.toml`. Before deploying:
 4. Replace `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` and `ALLOWED_EMAILS` placeholders with the actual Access team domain, application audience and two email addresses.
 5. Set the Worker secret `PROCESSOR_SHARED_SECRET` to a random value of at least 32 characters. Supply the same value only to the private processor host.
 6. Apply the migrations in order: `wrangler d1 migrations apply clipforge-db --remote`.
-7. Run `npm install` and `npm run typecheck` in this directory, then deploy only after all bindings, secrets and Access settings are correct.
+7. Run `npm install` and `npm run typecheck` in this directory. Set the two configured email identities and Access values without committing private addresses or secrets. Then run `npm run deploy` only after all bindings, secrets and Access settings are correct.
 
 Do not deploy with placeholder Access settings. Keep R2 private. Never put credentials in this file, `wrangler.toml`, GitHub source, frontend variables or a committed environment file.
 

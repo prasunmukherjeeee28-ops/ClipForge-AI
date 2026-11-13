@@ -27,8 +27,8 @@ flowchart TD
 ```
 
 ## Components
-- **Web:** dashboard, job progress, candidate review, clip library, playback/export, settings. Each of the two accounts sees only its own resources.
-- **API:** authenticate and authorize requests, create jobs, expose status and short-lived media access, and provide HMAC-authenticated processor endpoints. No heavy FFmpeg work in Workers.
+- **Web:** Vite-built React PWA served as Worker Static Assets from the same protected origin as the Hono API. Dashboard, job progress, clip library and account settings use the verified session. Each of the two accounts sees only its own resources.
+- **API:** the same Worker origin serves the PWA shell and Hono API. The API authenticates Cloudflare Access JWTs, authorizes requests, creates jobs, exposes owner-scoped media and provides HMAC-authenticated processor endpoints. No heavy FFmpeg work in Workers.
 - **D1:** users, jobs, source-asset ownership/upload state, multipart part records, lease state, candidate timestamps, clip metadata, status, scores and storage keys. It is the single source of truth for job dispatch. Never store video bytes.
 - **R2:** original videos and exports; keep buckets private.
 - **Processor:** separate Python runtime handles authorized media ingestion, FFprobe validation, FFmpeg audio extraction, local CPU INT8 speech transcription, analysis, rendering, storage and progress callbacks. It starts with one active job to protect a small CPU-only machine.
