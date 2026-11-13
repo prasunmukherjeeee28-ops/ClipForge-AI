@@ -592,21 +592,35 @@ app.post("/internal/processor/render-upload-init", async (c) => {
 app.post("/internal/processor/render-upload-part/:clipId/:partNumber", async (c) => {
   const clipId = c.req.param("clipId");
   const partNumber = Number(c.req.param("partNumber"));
-  const leaseId = c.req.header("X-ClipForge-Lease-Id") ?? "";
-  const leaseToken = c.req.header("X-ClipForge-Lease-Token") ?? "";
-  const rawBody = c.get("processorRawBody");
+  const packet = c.get("processorRawBody");
+  if (packet.byteLength < 5 || packet.byteLength > CLIP_OUTPUT_PART_BYTES + 4096) {
+    return jsonError(c, "Invalid render output packet size.", 400);
+  }
+  const metadataLength = new DataView(packet.buffer, packet.byteOffset, packet.byteLength).getUint32(0);
+  if (metadataLength < 2 || metadataLength > 2048 || metadataLength + 4 >= packet.byteLength) {
+    return jsonError(c, "Invalid render output packet metadata.", 400);
+  }
+  let metadata: { clipId?: string; leaseId?: string; leaseToken?: string };
+  try {
+    metadata = JSON.parse(new TextDecoder().decode(packet.subarray(4, 4 + metadataLength)));
+  } catch {
+    return jsonError(c, "Invalid render output packet metadata.", 400);
+  }
+  const rawBody = packet.subarray(4 + metadataLength);
   if (
-    !clipId || !leaseId || !leaseToken || !Number.isSafeInteger(partNumber) || partNumber < 1 ||
+    metadata.clipId !== clipId || typeof metadata.leaseId !== "string" ||
+    typeof metadata.leaseToken !== "string" ||
+    !Number.isSafeInteger(partNumber) || partNumber < 1 ||
     rawBody.byteLength < 1 || rawBody.byteLength > CLIP_OUTPUT_PART_BYTES
   ) return jsonError(c, "Invalid render output part.", 400);
   const contentLength = Number(c.req.header("Content-Length"));
-  if (!Number.isSafeInteger(contentLength) || contentLength !== rawBody.byteLength) {
-    return jsonError(c, "Render output part has an invalid Content-Length.", 400);
+  if (!Number.isSafeInteger(contentLength) || contentLength !== packet.byteLength) {
+    return jsonError(c, "Render output packet has an invalid Content-Length.", 400);
   }
-  const tokenHash = await sha256Hex(leaseToken);
+  const tokenHash = await sha256Hex(metadata.leaseToken);
   const clip = await c.env.DB.prepare(
     "SELECT output_key AS outputKey, upload_id AS uploadId, upload_size_bytes AS uploadSizeBytes FROM clips WHERE id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'rendering' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP AND upload_id IS NOT NULL",
-  ).bind(clipId, leaseId, tokenHash).first<{
+  ).bind(clipId, metadata.leaseId, tokenHash).first<{
     outputKey: string; uploadId: string; uploadSizeBytes: number;
   }>();
   if (!clip) return jsonError(c, "Render upload lease is invalid.", 409);
@@ -625,7 +639,7 @@ app.post("/internal/processor/render-upload-part/:clipId/:partNumber", async (c)
 
   const reservation = await c.env.DB.prepare(
     "INSERT INTO clip_output_parts (clip_id, part_number, status, size_bytes) SELECT ?1, ?2, 'uploading', ?3 WHERE EXISTS (SELECT 1 FROM clips WHERE id = ?1 AND lease_id = ?4 AND lease_token_hash = ?5 AND status = 'rendering' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP) ON CONFLICT(clip_id, part_number) DO NOTHING",
-  ).bind(clipId, partNumber, expectedBytes, leaseId, tokenHash).run();
+  ).bind(clipId, partNumber, expectedBytes, metadata.leaseId, tokenHash).run();
   if (!reservation.meta.changes) return jsonError(c, "This output part is already being stored.", 409);
 
   try {
