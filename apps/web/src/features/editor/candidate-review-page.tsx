@@ -27,7 +27,8 @@ export function CandidateReviewPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [savingId, setSavingId] = useState<string | null>(null);\n  const [renderingId, setRenderingId] = useState<string | null>(null);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [renderingId, setRenderingId] = useState<string | null>(null);
 
   const load = useCallback(async (quiet = false) => {
     if (!jobId) return;
