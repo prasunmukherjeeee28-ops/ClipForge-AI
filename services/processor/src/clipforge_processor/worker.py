@@ -199,6 +199,36 @@ async def _with_lease(
             task.cancel()
         await asyncio.gather(task, cancel_wait, lost_wait, return_exceptions=True)
 
+async def _score_semantic_candidates(
+    settings: Settings,
+    evidence: list[MomentEvidence],
+    cancelled: asyncio.Event,
+    lease_lost: asyncio.Event,
+) -> list:
+    """Use Gemini when configured, but never swallow job cancellation or lease loss."""
+    results = LocalHeuristicAdapter().score(evidence)
+    if not settings.semantic_api_key or not evidence:
+        return results
+
+    try:
+        adapter = GeminiSemanticAdapter(
+            settings.semantic_api_key,
+            model=settings.semantic_model,
+            timeout_seconds=settings.semantic_timeout_seconds,
+        )
+        return await _with_lease(
+            asyncio.to_thread(adapter.score, evidence),
+            cancelled,
+            lease_lost,
+        )
+    except (JobCancelled, LeaseLost):
+        raise
+    except Exception as exc:
+        # Provider outages, quota limits and malformed model output must not
+        # fail an otherwise valid clip job.
+        print("Gemini semantic refinement unavailable; using local scores:", type(exc).__name__)
+        return results
+
 
 def _private_job_directory(scratch_root: str, user_id: str, job_id: str) -> Path:
     # The API creates UUIDs. Reject unexpected identifiers before using them as path segments.
@@ -420,24 +450,9 @@ async def run_once() -> int:
             # Keep the deterministic detector as the safety net. Gemini receives only
             # the top heuristic candidates and their bounded transcript excerpts.
             semantic_evidence = _build_semantic_evidence(candidate_payload, Path(transcription["path"]))
-            semantic_results = LocalHeuristicAdapter().score(semantic_evidence)
-            if settings.semantic_api_key and semantic_evidence:
-                try:
-                    semantic_adapter = GeminiSemanticAdapter(
-                        settings.semantic_api_key,
-                        model=settings.semantic_model,
-                        timeout_seconds=settings.semantic_timeout_seconds,
-                    )
-                    semantic_results = await _with_lease(
-                        asyncio.to_thread(semantic_adapter.score, semantic_evidence),
-                        cancelled,
-                        lease_lost,
-                    )
-                    print("Gemini semantic refinement completed:", len(semantic_results))
-                except Exception as exc:
-                    # Provider outages, quota limits and malformed model output must not
-                    # fail an otherwise valid clip job or interrupt the active lease.
-                    print("Gemini semantic refinement unavailable; using local scores:", type(exc).__name__)
+            semantic_results = await _score_semantic_candidates(
+                settings, semantic_evidence, cancelled, lease_lost
+            )
 
             semantic_by_window = {
                 (round(result.start_seconds, 3), round(result.end_seconds, 3)): result
