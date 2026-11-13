@@ -48,7 +48,7 @@ def _select_render_candidates(candidates: list[dict[str, object]], limit: int = 
 
 def _clip_title(transcript_path: Path, start_seconds: float, end_seconds: float, index: int, title_hint: str | None = None) -> str:
     if isinstance(title_hint, str) and title_hint.strip():
-        clean_hint = re.sub(r"[\\x00-\\x1f\\x7f]", " ", title_hint).strip()
+        clean_hint = re.sub(r"[\x00-\x1f\x7f]", " ", title_hint).strip()
         clean_hint = " ".join(clean_hint.split())[:116].rstrip(" .!?")
         if clean_hint:
             return clean_hint
