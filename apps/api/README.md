@@ -55,14 +55,14 @@ Set `ALLOWED_EMAILS` to exactly the two intended Cloudflare Access email identit
 The Worker serves both the Vite frontend (`apps/web/dist`) and the Hono API from the same origin using Worker Static Assets. This keeps Cloudflare Access session handling same-origin; the API's public base URL can remain empty in the web build. `npm run deploy` in `apps/api` builds the frontend first, then deploys the Worker. Before deploying:
 
 1. Use the existing `clipforge-app-db` D1 database; its ID is configured in `wrangler.toml`.
-2. Enable Backblaze B2 object storage and create a private bucket named `clipforge-private-media` (do not enable public access or an `r2.dev` URL).
+2. Enable Backblaze B2 object storage and create a private bucket named `clipforge-private-media` (do not enable public access or an `r2.dev` URL). Create a bucket-restricted S3 application key, not the master key. The adapter needs `readFiles`, `writeFiles`, and `deleteFiles`; Backblaze currently documents `listAllBucketNames` as the capability that enables S3 multipart create/upload/complete/abort calls. Keep the key scoped to this one bucket.
 3. Configure a Cloudflare Access application for the app/API and restrict it to the two intended users.
 4. Replace `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` and `ALLOWED_EMAILS` placeholders with the actual Access team domain, application audience and two email addresses.
 5. Set the Worker secret `PROCESSOR_SHARED_SECRET` to a random value of at least 32 characters. Supply the same value only to the private processor host.
 6. The nine migrations have already been applied to `clipforge-app-db`; verify the remote migration list before making schema changes.
 7. Run `npm install` and `npm run typecheck` in this directory. Set the two configured email identities and Access values without committing private addresses or secrets. Then run `npm run deploy` only after all bindings, secrets and Access settings are correct.
 
-Do not deploy with placeholder Access settings. Keep Backblaze B2 object storage private. Never put credentials in this file, `wrangler.toml`, GitHub source, frontend variables or a committed environment file.
+Do not deploy with placeholder Access settings. Keep Backblaze B2 object storage private. B2 buckets are versioned: a normal S3 `DeleteObject` creates a delete marker rather than immediately erasing every older version. Configure a lifecycle rule to expire noncurrent versions after a short retention period (for example, one day) and abort incomplete multipart uploads after a short period. Treat app-level deletion as immediately hidden from users, but not as immediate physical erasure until the lifecycle policy runs. Never put credentials in this file, `wrangler.toml`, GitHub source, frontend variables or a committed environment file.
 
 ## Processor deployment
 
