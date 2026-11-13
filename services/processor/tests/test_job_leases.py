@@ -372,7 +372,7 @@ def test_cancel_all_query_only_marks_authenticated_users_jobs() -> None:
     add_user_and_job(db, "user-1", "own-queued-job")
     add_user_and_job(db, "user-2", "friend-queued-job")
     cancel_all_sql = api_sql_containing(
-        "WHERE user_id = ?1 AND status IN ('queued','processing')"
+        "WHERE user_id = ?1 AND (status IN ('queued','processing') OR (status = 'review' AND stage = 'awaiting_source_asset'))"
     )
     db.execute(cancel_all_sql, ("user-1",))
     states = {
