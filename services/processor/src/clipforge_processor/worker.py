@@ -594,6 +594,17 @@ async def run_once() -> int:
             result = await client.fail(job_id, lease_id, lease_token, "cancelled_by_user")
             print("Job cancelled:", json.dumps({"jobId": job_id, "result": result}))
             return 0
+        except asyncio.CancelledError:
+            # A service shutdown is not a user cancellation. Release the lease so
+            # the job can be claimed promptly by the next processor instance.
+            try:
+                await client.release(job_id, lease_id, lease_token)
+            except Exception as release_error:
+                print(
+                    "Processor shutdown could not release the lease; it will expire:",
+                    type(release_error).__name__,
+                )
+            raise
         except LeaseLost:
             # A replacement worker may now own this job. Do not mutate its state.
             print("Processor lease lost; stopping without modifying the job.")
