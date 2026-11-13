@@ -114,7 +114,37 @@ CREATE TABLE IF NOT EXISTS clips (
   hashtags_json TEXT NOT NULL DEFAULT '[]',
   duration_seconds REAL,
   aspect_ratio TEXT NOT NULL DEFAULT '9:16',
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','rendering','ready','failed','cancelled')),
+  progress INTEGER NOT NULL DEFAULT 0 CHECK(progress BETWEEN 0 AND 100),
+  error_code TEXT,
+  render_options_json TEXT NOT NULL DEFAULT '{"captions":true,"resolution":"1080x1920"}',
+  upload_id TEXT,
+  upload_size_bytes INTEGER CHECK(upload_size_bytes IS NULL OR upload_size_bytes BETWEEN 1 AND 536870912),
+  output_size_bytes INTEGER CHECK(output_size_bytes IS NULL OR output_size_bytes BETWEEN 1 AND 536870912),
+  output_sha256 TEXT CHECK(output_sha256 IS NULL OR length(output_sha256) = 64),
+  lease_id TEXT,
+  lease_token_hash TEXT,
+  lease_expires_at TEXT,
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+  max_attempts INTEGER NOT NULL DEFAULT 3 CHECK(max_attempts >= 1),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at TEXT,
+  cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK(cancel_requested IN (0,1))
+);
+
+CREATE TABLE IF NOT EXISTS clip_output_parts (
+  clip_id TEXT NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
+  part_number INTEGER NOT NULL CHECK(part_number BETWEEN 1 AND 10000),
+  status TEXT NOT NULL CHECK(status IN ('uploading','uploaded')),
+  etag TEXT,
+  size_bytes INTEGER NOT NULL CHECK(size_bytes > 0),
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(clip_id, part_number),
+  CHECK(
+    (status = 'uploading' AND etag IS NULL) OR
+    (status = 'uploaded' AND etag IS NOT NULL)
+  )
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs(user_id, created_at DESC);
@@ -133,6 +163,9 @@ CREATE INDEX IF NOT EXISTS idx_jobs_media_stage ON jobs(status, stage, media_ver
 CREATE INDEX IF NOT EXISTS idx_jobs_transcript_stage ON jobs(status, stage, transcript_verified_at);
 CREATE INDEX IF NOT EXISTS idx_candidates_job ON candidates(job_id);
 CREATE INDEX IF NOT EXISTS idx_candidates_generation ON candidates(job_id, generation_id, review_status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_clips_candidate_unique ON clips(candidate_id) WHERE candidate_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_clips_render_dispatch ON clips(status, created_at, lease_expires_at);
+CREATE INDEX IF NOT EXISTS idx_clip_output_parts_status ON clip_output_parts(clip_id, status, part_number);
 CREATE INDEX IF NOT EXISTS idx_clips_user_created ON clips(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_clips_job ON clips(job_id);
 

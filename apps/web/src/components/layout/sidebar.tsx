@@ -3,7 +3,6 @@ import {
   LayoutDashboard,
   Upload,
   Library,
-  Scissors,
   Radar,
   Settings,
   Clapperboard,
@@ -15,7 +14,6 @@ const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
   { to: "/upload", label: "Upload", icon: Upload },
   { to: "/library", label: "Clip Library", icon: Library },
-  { to: "/editor", label: "Clip Editor", icon: Scissors },
   { to: "/live-radar", label: "Live Radar", icon: Radar },
 ];
 

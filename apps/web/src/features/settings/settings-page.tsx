@@ -1,188 +1,140 @@
-import { useState } from "react";
-import { User, Palette, Download, Sparkles, HardDrive, Camera } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { ShieldCheck, UserRound, RefreshCw, Video, Scissors } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { Badge } from "@/components/ui/badge";
+import {
+  getClips,
+  getCurrentUser,
+  getSourceAssets,
+  type CurrentUser,
+  type UserClip,
+  type UserSourceAsset,
+} from "@/lib/api";
 
-function SettingRow({
-  icon: Icon,
-  label,
-  desc,
-  control,
-}: {
-  icon: typeof User;
-  label: string;
-  desc: string;
-  control: React.ReactNode;
-}) {
-  return (
-    <div className="flex items-center gap-4 px-5 py-4">
-      <span className="glass flex h-9 w-9 shrink-0 items-center justify-center rounded-lg">
-        <Icon className="h-4 w-4 text-violet-350" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium text-zinc-200">{label}</p>
-        <p className="mt-0.5 text-xs leading-relaxed text-zinc-500">{desc}</p>
-      </div>
-      <div className="shrink-0">{control}</div>
-    </div>
-  );
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${bytes} B`;
 }
 
 export function SettingsPage() {
-  const [name, setName] = useState("Piyush");
-  const [theme, setTheme] = useState("dark");
-  const [defaultFormat, setDefaultFormat] = useState("9:16 vertical");
-  const [defaultCaptions, setDefaultCaptions] = useState(true);
-  const [autoScores, setAutoScores] = useState(true);
-  const [sensitivity, setSensitivity] = useState("balanced");
-  const [profanity, setProfanity] = useState(true);
+  const [user, setUser] = useState<CurrentUser | null>(null);
+  const [assets, setAssets] = useState<UserSourceAsset[]>([]);
+  const [clips, setClips] = useState<UserClip[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async (quiet = false) => {
+    if (quiet) setRefreshing(true);
+    else setLoading(true);
+    setError(null);
+    try {
+      const [nextUser, nextAssets, nextClips] = await Promise.all([
+        getCurrentUser(),
+        getSourceAssets(),
+        getClips(),
+      ]);
+      setUser(nextUser);
+      setAssets(nextAssets);
+      setClips(nextClips);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not load account settings.");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const sourceBytes = assets.reduce((total, asset) => total + asset.sizeBytes, 0);
+  const outputBytes = clips.reduce((total, clip) => total + (clip.outputSizeBytes ?? 0), 0);
+  const sourceQuota = 8 * 1024 * 1024 * 1024;
+  const readyAssets = assets.filter((asset) => asset.status === "ready").length;
+  const readyClips = clips.filter((clip) => clip.status === "ready").length;
 
   return (
     <div className="mx-auto max-w-3xl space-y-5">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">Settings</h1>
-        <p className="mt-1 text-sm text-zinc-500">Your profile, preferences and storage.</p>
-      </div>
-
-      {/* Account */}
-      <Card>
-        <CardHeader title="Account profile" description="Identity used for private workspace access" />
-        <div className="flex items-center gap-4 border-t hairline px-5 py-4">
-          <div className="glass relative flex h-14 w-14 items-center justify-center rounded-full">
-            <Camera className="h-5 w-5 text-zinc-500" />
-          </div>
-          <div>
-            <Button size="sm" variant="secondary" onClick={() => alert("Avatar upload connects to authenticated media delivery (mock).")}>
-              Change avatar
-            </Button>
-            <p className="mt-1.5 text-[11px] text-zinc-600">Stored in private object storage, served via short-lived URLs.</p>
-          </div>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">Account & workspace</h1>
+          <p className="mt-1 text-sm text-zinc-500">Live account identity, privacy model and storage usage.</p>
         </div>
-        <div className="border-t hairline px-5 py-4">
-          <label className="text-xs font-medium text-zinc-500" htmlFor="name">Display name</label>
-          <Input id="name" className="mt-1.5 max-w-sm" value={name} onChange={(e) => setName(e.target.value)} />
-          <p className="mt-1.5 text-[11px] text-zinc-600">Signed in as piyush@clipforge.local · workspace: trusted-group</p>
-        </div>
-      </Card>
-
-      {/* Appearance */}
-      <Card>
-        <CardHeader title="Appearance" description="Interface theme (Liquid Glass is the default)" />
-        <div className="divide-y divide-white/[0.05]">
-          <SettingRow
-            icon={Palette}
-            label="Theme"
-            desc="Dark is tuned for long editing sessions."
-            control={
-              <Select className="w-36" value={theme} onChange={(e) => setTheme(e.target.value)} aria-label="Theme">
-                <option value="dark">Dark (Liquid Glass)</option>
-                <option value="darker">Pure black</option>
-              </Select>
-            }
-          />
-        </div>
-      </Card>
-
-      {/* Export preferences */}
-      <Card>
-        <CardHeader title="Export preferences" description="Defaults applied to every new render job" />
-        <div className="divide-y divide-white/[0.05]">
-          <SettingRow
-            icon={Download}
-            label="Default format"
-            desc="Aspect ratio preset for clip exports."
-            control={
-              <Select className="w-40" value={defaultFormat} onChange={(e) => setDefaultFormat(e.target.value)} aria-label="Default format">
-                <option>9:16 vertical</option>
-                <option>16:9 landscape</option>
-                <option>1:1 square</option>
-              </Select>
-            }
-          />
-          <SettingRow
-            icon={Download}
-            label="Burn captions by default"
-            desc="Sync styled subtitles into exported MP4s."
-            control={<Switch checked={defaultCaptions} onCheckedChange={setDefaultCaptions} label="Burn captions by default" />}
-          />
-        </div>
-      </Card>
-
-      {/* AI preferences */}
-      <Card>
-        <CardHeader title="AI preferences" description="Moment detection behaviour — scores are estimates" />
-        <div className="divide-y divide-white/[0.05]">
-          <SettingRow
-            icon={Sparkles}
-            label="Detection sensitivity"
-            desc="Strict finds fewer, sharper moments. Loose casts a wider net."
-            control={
-              <Select className="w-32" value={sensitivity} onChange={(e) => setSensitivity(e.target.value)} aria-label="Detection sensitivity">
-                <option value="strict">Strict</option>
-                <option value="balanced">Balanced</option>
-                <option value="loose">Loose</option>
-              </Select>
-            }
-          />
-          <SettingRow
-            icon={Sparkles}
-            label="Show review scores"
-            desc="Hook / context / payoff estimates on candidates."
-            control={<Switch checked={autoScores} onCheckedChange={setAutoScores} label="Show review scores" />}
-          />
-          <SettingRow
-            icon={Sparkles}
-            label="Exclude profanity spikes"
-            desc="Filter hype spikes that are mostly profanity."
-            control={<Switch checked={profanity} onCheckedChange={setProfanity} label="Exclude profanity spikes" />}
-          />
-        </div>
-      </Card>
-
-      {/* Storage */}
-      <Card>
-        <CardHeader title="Storage" description="Private R2 usage across sources and exports" />
-        <div className="space-y-4 border-t hairline px-5 py-4">
-          <div>
-            <div className="mb-1.5 flex items-center justify-between text-[13px]">
-              <span className="flex items-center gap-2 text-zinc-300">
-                <HardDrive className="h-4 w-4 text-violet-350" /> 18.4 GB of 100 GB
-              </span>
-              <span className="font-mono text-xs text-zinc-500">18%</span>
-            </div>
-            <Progress value={18} />
-          </div>
-          <div className="grid grid-cols-3 gap-3 text-center">
-            {[
-              { label: "Source videos", value: "12.1 GB" },
-              { label: "Exports", value: "5.9 GB" },
-              { label: "Trash", value: "0.4 GB" },
-            ].map((s) => (
-              <div key={s.label} className="glass rounded-lg px-3 py-2.5">
-                <p className="text-sm font-semibold text-zinc-100">{s.value}</p>
-                <p className="mt-0.5 text-[11px] text-zinc-500">{s.label}</p>
-              </div>
-            ))}
-          </div>
-          <div className="flex items-center justify-between">
-            <Badge tone="green">Retention: 90 days</Badge>
-            <Button size="sm" variant="secondary" onClick={() => alert("Retention policy enforcement runs server-side (mock).")}>
-              Manage retention
-            </Button>
-          </div>
-        </div>
-      </Card>
-
-      <div className="flex justify-end pb-4">
-        <Button onClick={() => alert("Preferences saved locally — they will persist to the account API once auth ships.")}>
-          Save preferences
+        <Button size="sm" variant="secondary" onClick={() => void load(true)} disabled={refreshing || loading}>
+          <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} /> Refresh
         </Button>
       </div>
+
+      {error ? <p role="alert" className="rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-300">{error}</p> : null}
+
+      <Card>
+        <CardHeader title="Authenticated account" description="Verified through Cloudflare Access" />
+        <div className="flex items-start gap-3 border-t hairline px-5 py-4">
+          <span className="glass flex h-10 w-10 items-center justify-center rounded-lg"><UserRound className="h-5 w-5 text-violet-350" /></span>
+          <div className="min-w-0 flex-1">
+            {loading ? <p className="text-sm text-zinc-500">Loading account…</p> : (
+              <>
+                <p className="break-all text-sm font-medium text-zinc-100">{user?.email ?? "Account unavailable"}</p>
+                <p className="mt-1 break-all font-mono text-[11px] text-zinc-600">Account ID: {user?.id ?? "—"}</p>
+              </>
+            )}
+          </div>
+          <Badge tone={user ? "green" : "zinc"}>{user ? "Authenticated" : "—"}</Badge>
+        </div>
+      </Card>
+
+      <Card>
+        <CardHeader title="Privacy and ownership" description="How this private two-account workspace is isolated" />
+        <div className="space-y-3 px-5 pb-5">
+          {[
+            ["Separate libraries", "Each account sees only its own jobs, candidates, source files and rendered clips."],
+            ["Private media storage", "Source files and rendered MP4s are stored in private R2 objects; downloads require the owning account."],
+            ["No social login integration", "ClipForge does not connect to Instagram or publish on your behalf. Download and post from your own account."],
+          ].map(([title, description]) => (
+            <div key={title} className="flex gap-3">
+              <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-violet-350" />
+              <div><p className="text-[13px] font-medium text-zinc-200">{title}</p><p className="mt-1 text-xs leading-relaxed text-zinc-500">{description}</p></div>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <Card>
+        <CardHeader title="Storage usage" description="Current usage reported by your private account records" />
+        <div className="space-y-5 border-t hairline px-5 py-4">
+          <div>
+            <div className="mb-2 flex items-center justify-between gap-3 text-sm">
+              <span className="flex items-center gap-2 text-zinc-300"><Video className="h-4 w-4 text-violet-350" /> Source assets</span>
+              <span className="font-mono text-xs text-zinc-500">{loading ? "—" : `${formatBytes(sourceBytes)} / 8 GB`}</span>
+            </div>
+            <Progress value={Math.min(100, (sourceBytes / sourceQuota) * 100)} />
+            <p className="mt-1 text-[11px] text-zinc-600">{readyAssets} ready source files · {assets.length} total records</p>
+          </div>
+          <div>
+            <div className="mb-2 flex items-center justify-between gap-3 text-sm">
+              <span className="flex items-center gap-2 text-zinc-300"><Scissors className="h-4 w-4 text-violet-350" /> Rendered MP4s</span>
+              <span className="font-mono text-xs text-zinc-500">{loading ? "—" : formatBytes(outputBytes)}</span>
+            </div>
+            <p className="text-[11px] text-zinc-600">{readyClips} ready clips · {clips.length} total clip records</p>
+          </div>
+        </div>
+      </Card>
+
+      <Card>
+        <CardHeader title="Processing defaults" description="Applied per render job; no global preferences are stored yet" />
+        <div className="space-y-3 px-5 pb-5">
+          <div className="flex items-center justify-between gap-3 text-sm"><span className="text-zinc-400">Default export</span><Badge tone="violet">9:16 vertical MP4</Badge></div>
+          <div className="flex items-center justify-between gap-3 text-sm"><span className="text-zinc-400">Default resolution</span><span className="font-mono text-xs text-zinc-300">1080 × 1920</span></div>
+          <div className="flex items-center justify-between gap-3 text-sm"><span className="text-zinc-400">Captions</span><span className="text-xs text-zinc-300">On by default · per render adjustable</span></div>
+          <div className="flex items-center justify-between gap-3 text-sm"><span className="text-zinc-400">Moment scoring</span><span className="text-xs text-zinc-300">Local heuristic, human review required</span></div>
+        </div>
+      </Card>
     </div>
   );
 }

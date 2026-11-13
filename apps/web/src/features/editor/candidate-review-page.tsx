@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, Check, Clock3, RefreshCw, X } from "lucide-react";
+import { ArrowLeft, Check, Clock3, RefreshCw, Scissors, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -9,6 +9,7 @@ import { Progress } from "@/components/ui/progress";
 import {
   getJobCandidates,
   getJobStatus,
+  queueCandidateRender,
   reviewJobCandidate,
   type JobCandidate,
   type JobStatusSnapshot,
@@ -27,6 +28,7 @@ export function CandidateReviewPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [renderingId, setRenderingId] = useState<string | null>(null);
 
   const load = useCallback(async (quiet = false) => {
     if (!jobId) return;
@@ -51,6 +53,27 @@ export function CandidateReviewPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const renderCandidate = async (candidateId: string) => {
+    setRenderingId(candidateId);
+    setError(null);
+    try {
+      const clip = await queueCandidateRender(candidateId, {
+        captions: true,
+        resolution: "1080x1920",
+      });
+      await load(true);
+      window.alert(
+        clip.status === "ready"
+          ? "This candidate already has a finished MP4. Open your clip library to download it."
+          : "Clip render queued. Track progress and download the MP4 from your private clip library.",
+      );
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not queue this candidate for rendering.");
+    } finally {
+      setRenderingId(null);
+    }
+  };
 
   const changeReview = async (
     candidateId: string,
@@ -180,6 +203,11 @@ export function CandidateReviewPage() {
                 <Button size="sm" variant="secondary" disabled={savingId === candidate.id} onClick={() => void changeReview(candidate.id, "selected")}>
                   <Check className="h-4 w-4" /> Keep candidate
                 </Button>
+                {candidate.reviewStatus === "selected" ? (
+                  <Button size="sm" disabled={renderingId === candidate.id} onClick={() => void renderCandidate(candidate.id)}>
+                    <Scissors className="h-4 w-4" /> {renderingId === candidate.id ? "Queuing…" : "Render MP4"}
+                  </Button>
+                ) : null}
               </div>
             </Card>
           ))}

@@ -13,6 +13,7 @@ type Bindings = {
 type Variables = {
   user: { id: string; email: string; subject: string };
   processorBody: string;
+  processorRawBody: Uint8Array;
 };
 
 type AppContext = Context<{ Bindings: Bindings; Variables: Variables }>;
@@ -22,6 +23,8 @@ const encoder = new TextEncoder();
 const SOURCE_ASSET_PART_BYTES = 8 * 1024 * 1024;
 const MAX_SOURCE_ASSET_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_SOURCE_ASSET_USER_BYTES = 8 * 1024 * 1024 * 1024;
+const CLIP_OUTPUT_PART_BYTES = 8 * 1024 * 1024;
+const MAX_CLIP_OUTPUT_BYTES = 512 * 1024 * 1024;
 const SOURCE_ASSET_EXTENSIONS: Record<string, readonly string[]> = {
   "video/mp4": [".mp4", ".m4v"],
   "video/quicktime": [".mov"],
@@ -64,10 +67,15 @@ async function verifyProcessorSignature(c: AppContext): Promise<boolean> {
   if (!secret || !/^\d{10}$/.test(timestamp) || !/^[a-f0-9]{32}$/i.test(nonce) || !signature) return false;
   const seconds = Number(timestamp);
   if (!Number.isFinite(seconds) || Math.abs(Date.now() / 1000 - seconds) > 300) return false;
-  const body = await c.req.text();
-  const canonical = [timestamp, nonce.toLowerCase(), c.req.method.toUpperCase(), new URL(c.req.url).pathname, body].join("\n");
+  const rawBody = new Uint8Array(await c.req.arrayBuffer());
+  const canonicalPrefix = encoder.encode(
+    [timestamp, nonce.toLowerCase(), c.req.method.toUpperCase(), new URL(c.req.url).pathname, ""].join("\n"),
+  );
+  const canonical = new Uint8Array(canonicalPrefix.length + rawBody.length);
+  canonical.set(canonicalPrefix);
+  canonical.set(rawBody, canonicalPrefix.length);
   const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
-  const valid = await crypto.subtle.verify("HMAC", key, signature, encoder.encode(canonical));
+  const valid = await crypto.subtle.verify("HMAC", key, signature, canonical);
   if (!valid) return false;
 
   // Consume a one-time nonce only after signature verification. The primary key
@@ -80,7 +88,9 @@ async function verifyProcessorSignature(c: AppContext): Promise<boolean> {
   ).bind(await sha256Hex(nonce.toLowerCase())).run();
   if (!consumed.meta.changes) return false;
 
-  c.set("processorBody", body);
+  const contentType = c.req.header("Content-Type") ?? "";
+  c.set("processorBody", contentType.includes("application/json") ? new TextDecoder().decode(rawBody) : "");
+  c.set("processorRawBody", rawBody);
   return true;
 }
 
@@ -436,6 +446,300 @@ app.post("/internal/processor/moments-ready", async (c) => {
     return jsonError(c, "The processor lease expired or changed before candidates could be saved.", 409);
   }
   return c.json({ ok: true, stage: "moments_detected", candidateCount: validated.length, generationId });
+});
+
+app.post("/internal/processor/render-claim", async (c) => {
+  const body = parseProcessorBody<{ workerId?: unknown }>(c);
+  if (!body || typeof body.workerId !== "string" || body.workerId.length < 1 || body.workerId.length > 100) {
+    return jsonError(c, "A valid workerId is required.", 400);
+  }
+
+  await c.env.DB.prepare(
+    "UPDATE clips SET status = 'cancelled', lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'rendering' AND cancel_requested = 1 AND lease_expires_at <= CURRENT_TIMESTAMP",
+  ).run();
+
+  // Cancellation can race with a processor crash. Keep the upload ID until
+  // R2 confirms that the abandoned multipart session has actually been aborted.
+  const cancelledUploads = await c.env.DB.prepare(
+    "SELECT id, output_key AS outputKey, upload_id AS uploadId FROM clips WHERE status = 'cancelled' AND upload_id IS NOT NULL LIMIT 100",
+  ).all<{ id: string; outputKey: string; uploadId: string }>();
+  for (const cancelled of cancelledUploads.results) {
+    try {
+      await c.env.MEDIA.resumeMultipartUpload(cancelled.outputKey, cancelled.uploadId).abort();
+      await c.env.DB.batch([
+        c.env.DB.prepare(
+          "DELETE FROM clip_output_parts WHERE clip_id = ?1",
+        ).bind(cancelled.id),
+        c.env.DB.prepare(
+          "UPDATE clips SET upload_id = NULL, upload_size_bytes = NULL, output_sha256 = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND status = 'cancelled' AND upload_id = ?2",
+        ).bind(cancelled.id, cancelled.uploadId),
+      ]);
+    } catch {
+      // Retain the upload ID so a later poll can retry cleanup.
+    }
+  }
+  await c.env.DB.prepare(
+    "UPDATE clips SET status = 'failed', error_code = 'render_retries_exhausted', lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'rendering' AND lease_expires_at <= CURRENT_TIMESTAMP AND attempt_count >= max_attempts AND cancel_requested = 0",
+  ).run();
+  await c.env.DB.prepare(
+    "UPDATE clips SET status = 'queued', progress = 0, error_code = 'render_lease_expired', lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'rendering' AND lease_expires_at <= CURRENT_TIMESTAMP AND attempt_count < max_attempts AND cancel_requested = 0",
+  ).run();
+
+  const leaseId = uuid();
+  const leaseToken = uuid() + uuid();
+  const leaseTokenHash = await sha256Hex(leaseToken);
+  const clip = await c.env.DB.prepare(
+    "UPDATE clips SET status = 'rendering', attempt_count = attempt_count + 1, lease_id = ?1, lease_token_hash = ?2, lease_expires_at = datetime('now', '+90 seconds'), progress = MAX(progress, 1), updated_at = CURRENT_TIMESTAMP WHERE id = (SELECT clips.id FROM clips INNER JOIN jobs ON jobs.id = clips.job_id AND jobs.user_id = clips.user_id INNER JOIN candidates ON candidates.id = clips.candidate_id AND candidates.job_id = clips.job_id INNER JOIN source_assets ON source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id WHERE clips.status = 'queued' AND clips.cancel_requested = 0 AND candidates.review_status = 'selected' AND source_assets.status = 'ready' ORDER BY clips.created_at ASC LIMIT 1) AND status = 'queued' RETURNING id, job_id AS jobId, user_id AS userId, candidate_id AS candidateId, output_key AS outputKey, title, description, duration_seconds AS durationSeconds, render_options_json AS renderOptionsJson, lease_id AS leaseId",
+  ).bind(leaseId, leaseTokenHash).first<{
+    id: string; jobId: string; userId: string; candidateId: string;
+    outputKey: string; title: string; description: string | null;
+    durationSeconds: number; renderOptionsJson: string; leaseId: string;
+  }>();
+  if (!clip) return c.json({ clip: null });
+  const candidate = await c.env.DB.prepare(
+    "SELECT candidates.start_seconds AS startSeconds, candidates.end_seconds AS endSeconds, candidates.transcript_excerpt AS transcriptExcerpt, jobs.source_asset_id AS sourceAssetId FROM candidates INNER JOIN jobs ON jobs.id = candidates.job_id WHERE candidates.id = ?1 AND candidates.job_id = ?2 AND jobs.user_id = ?3",
+  ).bind(clip.candidateId, clip.jobId, clip.userId).first<{
+    startSeconds: number; endSeconds: number; transcriptExcerpt: string | null; sourceAssetId: string;
+  }>();
+  if (!candidate) {
+    await c.env.DB.prepare(
+      "UPDATE clips SET status = 'failed', error_code = 'render_source_unavailable', lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL WHERE id = ?1 AND lease_id = ?2",
+    ).bind(clip.id, leaseId).run();
+    return c.json({ clip: null });
+  }
+  return c.json({
+    clip: { ...clip, ...candidate },
+    lease: { leaseId, leaseToken, expiresInSeconds: 90 },
+  });
+});
+
+app.post("/internal/processor/render-heartbeat", async (c) => {
+  const body = parseProcessorBody<{ clipId?: string; leaseId?: string; leaseToken?: string }>(c);
+  if (!body?.clipId || !body.leaseId || !body.leaseToken) return jsonError(c, "Invalid render heartbeat payload.", 400);
+  const tokenHash = await sha256Hex(body.leaseToken);
+  const clip = await c.env.DB.prepare(
+    "UPDATE clips SET lease_expires_at = datetime('now', '+90 seconds'), updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'rendering' AND lease_expires_at > CURRENT_TIMESTAMP RETURNING cancel_requested AS cancelRequested, lease_expires_at AS leaseExpiresAt",
+  ).bind(body.clipId, body.leaseId, tokenHash).first<{ cancelRequested: number; leaseExpiresAt: string }>();
+  if (!clip) return jsonError(c, "Render lease is no longer valid.", 409);
+  return c.json({ ok: true, cancelRequested: clip.cancelRequested === 1, leaseExpiresAt: clip.leaseExpiresAt });
+});
+
+app.post("/internal/processor/render-progress", async (c) => {
+  const body = parseProcessorBody<{
+    clipId?: string; leaseId?: string; leaseToken?: string; progress?: number;
+  }>(c);
+  if (
+    !body?.clipId || !body.leaseId || !body.leaseToken ||
+    typeof body.progress !== "number" || !Number.isInteger(body.progress) ||
+    body.progress < 0 || body.progress > 99
+  ) return jsonError(c, "Invalid render progress payload.", 400);
+  const tokenHash = await sha256Hex(body.leaseToken);
+  const result = await c.env.DB.prepare(
+    "UPDATE clips SET progress = MAX(progress, ?1), updated_at = CURRENT_TIMESTAMP WHERE id = ?2 AND lease_id = ?3 AND lease_token_hash = ?4 AND status = 'rendering' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP",
+  ).bind(body.progress, body.clipId, body.leaseId, tokenHash).run();
+  if (!result.meta.changes) return jsonError(c, "Render lease is invalid or cancellation was requested.", 409);
+  return c.json({ ok: true });
+});
+
+app.post("/internal/processor/render-source", async (c) => {
+  const body = parseProcessorBody<{ clipId?: string; leaseId?: string; leaseToken?: string }>(c);
+  if (!body?.clipId || !body.leaseId || !body.leaseToken) return jsonError(c, "Invalid render-source request.", 400);
+  const tokenHash = await sha256Hex(body.leaseToken);
+  const asset = await c.env.DB.prepare(
+    "SELECT source_assets.object_key AS objectKey, source_assets.size_bytes AS sizeBytes, source_assets.content_type AS contentType FROM clips INNER JOIN jobs ON jobs.id = clips.job_id AND jobs.user_id = clips.user_id INNER JOIN source_assets ON source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id WHERE clips.id = ?1 AND clips.lease_id = ?2 AND clips.lease_token_hash = ?3 AND clips.status = 'rendering' AND clips.cancel_requested = 0 AND clips.lease_expires_at > CURRENT_TIMESTAMP AND source_assets.status = 'ready'",
+  ).bind(body.clipId, body.leaseId, tokenHash).first<{
+    objectKey: string; sizeBytes: number; contentType: string;
+  }>();
+  if (!asset) return jsonError(c, "No owner-matched source asset is available for this render lease.", 409);
+  const stored = await c.env.MEDIA.get(asset.objectKey);
+  if (!stored || stored.size !== asset.sizeBytes) return jsonError(c, "The private source object is missing or has an invalid size.", 409);
+  return new Response(stored.body, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "Content-Length": String(stored.size),
+      "Cache-Control": "private, no-store",
+      "X-ClipForge-Source-Content-Type": asset.contentType,
+    },
+  });
+});
+
+app.post("/internal/processor/render-upload-init", async (c) => {
+  const body = parseProcessorBody<{ clipId?: string; leaseId?: string; leaseToken?: string; sizeBytes?: number; sha256?: string }>(c);
+  if (
+    !body?.clipId || !body.leaseId || !body.leaseToken ||
+    !Number.isSafeInteger(body.sizeBytes) || body.sizeBytes! < 1 || body.sizeBytes! > MAX_CLIP_OUTPUT_BYTES ||
+    typeof body.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(body.sha256)
+  ) return jsonError(c, "Invalid clip upload initialization payload.", 400);
+  const tokenHash = await sha256Hex(body.leaseToken);
+  const clip = await c.env.DB.prepare(
+    "SELECT output_key AS outputKey, upload_id AS uploadId, upload_size_bytes AS uploadSizeBytes, output_sha256 AS outputSha256 FROM clips WHERE id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'rendering' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP",
+  ).bind(body.clipId, body.leaseId, tokenHash).first<{
+    outputKey: string; uploadId: string | null; uploadSizeBytes: number | null; outputSha256: string | null;
+  }>();
+  if (!clip) return jsonError(c, "Render lease is invalid or expired.", 409);
+  if (clip.uploadId && clip.uploadSizeBytes === body.sizeBytes && clip.outputSha256 === body.sha256) {
+    const uploaded = await c.env.DB.prepare(
+      "SELECT part_number AS partNumber, size_bytes AS sizeBytes FROM clip_output_parts WHERE clip_id = ?1 AND status = 'uploaded' ORDER BY part_number",
+    ).bind(body.clipId).all();
+    return c.json({
+      partSizeBytes: CLIP_OUTPUT_PART_BYTES,
+      partCount: Math.ceil(body.sizeBytes! / CLIP_OUTPUT_PART_BYTES),
+      uploadedParts: uploaded.results,
+    });
+  }
+
+  if (clip.uploadId) {
+    await c.env.MEDIA.resumeMultipartUpload(clip.outputKey, clip.uploadId).abort().catch(() => undefined);
+    await c.env.DB.prepare("DELETE FROM clip_output_parts WHERE clip_id = ?1").bind(body.clipId).run();
+  }
+  const multipart = await c.env.MEDIA.createMultipartUpload(clip.outputKey, {
+    httpMetadata: { contentType: "video/mp4" },
+    customMetadata: { clipId: body.clipId, sha256: body.sha256 },
+  });
+  const updated = await c.env.DB.prepare(
+    "UPDATE clips SET upload_id = ?1, upload_size_bytes = ?2, output_sha256 = ?3, updated_at = CURRENT_TIMESTAMP WHERE id = ?4 AND lease_id = ?5 AND lease_token_hash = ?6 AND status = 'rendering' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP",
+  ).bind(multipart.uploadId, body.sizeBytes, body.sha256, body.clipId, body.leaseId, tokenHash).run();
+  if (!updated.meta.changes) {
+    await multipart.abort().catch(() => undefined);
+    return jsonError(c, "Render lease changed while initializing the output upload.", 409);
+  }
+  return c.json({
+    partSizeBytes: CLIP_OUTPUT_PART_BYTES,
+    partCount: Math.ceil(body.sizeBytes! / CLIP_OUTPUT_PART_BYTES),
+    uploadedParts: [],
+  });
+});
+
+app.post("/internal/processor/render-upload-part/:clipId/:partNumber", async (c) => {
+  const clipId = c.req.param("clipId");
+  const partNumber = Number(c.req.param("partNumber"));
+  const packet = c.get("processorRawBody");
+  if (packet.byteLength < 5 || packet.byteLength > CLIP_OUTPUT_PART_BYTES + 4096) {
+    return jsonError(c, "Invalid render output packet size.", 400);
+  }
+  const metadataLength = new DataView(packet.buffer, packet.byteOffset, packet.byteLength).getUint32(0);
+  if (metadataLength < 2 || metadataLength > 2048 || metadataLength + 4 >= packet.byteLength) {
+    return jsonError(c, "Invalid render output packet metadata.", 400);
+  }
+  let metadata: { clipId?: string; leaseId?: string; leaseToken?: string };
+  try {
+    metadata = JSON.parse(new TextDecoder().decode(packet.subarray(4, 4 + metadataLength)));
+  } catch {
+    return jsonError(c, "Invalid render output packet metadata.", 400);
+  }
+  const rawBody = packet.subarray(4 + metadataLength);
+  if (
+    metadata.clipId !== clipId || typeof metadata.leaseId !== "string" ||
+    typeof metadata.leaseToken !== "string" ||
+    !Number.isSafeInteger(partNumber) || partNumber < 1 ||
+    rawBody.byteLength < 1 || rawBody.byteLength > CLIP_OUTPUT_PART_BYTES
+  ) return jsonError(c, "Invalid render output part.", 400);
+  const contentLength = Number(c.req.header("Content-Length"));
+  if (!Number.isSafeInteger(contentLength) || contentLength !== packet.byteLength) {
+    return jsonError(c, "Render output packet has an invalid Content-Length.", 400);
+  }
+  const tokenHash = await sha256Hex(metadata.leaseToken);
+  const clip = await c.env.DB.prepare(
+    "SELECT output_key AS outputKey, upload_id AS uploadId, upload_size_bytes AS uploadSizeBytes, output_sha256 AS outputSha256 FROM clips WHERE id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'rendering' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP AND upload_id IS NOT NULL",
+  ).bind(clipId, metadata.leaseId, tokenHash).first<{
+    outputKey: string; uploadId: string; uploadSizeBytes: number;
+  }>();
+  if (!clip) return jsonError(c, "Render upload lease is invalid.", 409);
+  const partCount = Math.ceil(clip.uploadSizeBytes / CLIP_OUTPUT_PART_BYTES);
+  if (partNumber > partCount) return jsonError(c, "Render part number is outside the expected range.", 400);
+  const expectedBytes = Math.min(CLIP_OUTPUT_PART_BYTES, clip.uploadSizeBytes - (partNumber - 1) * CLIP_OUTPUT_PART_BYTES);
+  if (rawBody.byteLength !== expectedBytes) return jsonError(c, "Render output part size does not match the upload session.", 400);
+
+  const existing = await c.env.DB.prepare(
+    "SELECT status, size_bytes AS sizeBytes FROM clip_output_parts WHERE clip_id = ?1 AND part_number = ?2",
+  ).bind(clipId, partNumber).first<{ status: string; sizeBytes: number }>();
+  if (existing?.status === "uploaded" && existing.sizeBytes === expectedBytes) {
+    return c.json({ clipId, partNumber, uploaded: true, alreadyUploaded: true });
+  }
+  if (existing?.status === "uploading") return jsonError(c, "This output part is already being stored.", 409);
+
+  const reservation = await c.env.DB.prepare(
+    "INSERT INTO clip_output_parts (clip_id, part_number, status, size_bytes) SELECT ?1, ?2, 'uploading', ?3 WHERE EXISTS (SELECT 1 FROM clips WHERE id = ?1 AND lease_id = ?4 AND lease_token_hash = ?5 AND status = 'rendering' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP) ON CONFLICT(clip_id, part_number) DO NOTHING",
+  ).bind(clipId, partNumber, expectedBytes, metadata.leaseId, tokenHash).run();
+  if (!reservation.meta.changes) return jsonError(c, "This output part is already being stored.", 409);
+
+  try {
+    const uploaded = await c.env.MEDIA.resumeMultipartUpload(clip.outputKey, clip.uploadId)
+      .uploadPart(partNumber, rawBody);
+    const saved = await c.env.DB.prepare(
+      "UPDATE clip_output_parts SET status = 'uploaded', etag = ?1, updated_at = CURRENT_TIMESTAMP WHERE clip_id = ?2 AND part_number = ?3 AND status = 'uploading'",
+    ).bind(uploaded.etag, clipId, partNumber).run();
+    if (!saved.meta.changes) return jsonError(c, "Output part state changed; inspect the clip upload and retry.", 409);
+  } catch {
+    await c.env.DB.prepare(
+      "DELETE FROM clip_output_parts WHERE clip_id = ?1 AND part_number = ?2 AND status = 'uploading'",
+    ).bind(clipId, partNumber).run();
+    return jsonError(c, "This output part could not be stored. Retry the missing part.", 409);
+  }
+  return c.json({ clipId, partNumber, uploaded: true }, 201);
+});
+
+app.post("/internal/processor/render-complete", async (c) => {
+  const body = parseProcessorBody<{ clipId?: string; leaseId?: string; leaseToken?: string }>(c);
+  if (!body?.clipId || !body.leaseId || !body.leaseToken) return jsonError(c, "Invalid render completion payload.", 400);
+  const tokenHash = await sha256Hex(body.leaseToken);
+  const clip = await c.env.DB.prepare(
+    "SELECT output_key AS outputKey, upload_id AS uploadId, upload_size_bytes AS uploadSizeBytes, output_sha256 AS outputSha256 FROM clips WHERE id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'rendering' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP AND upload_id IS NOT NULL",
+  ).bind(body.clipId, body.leaseId, tokenHash).first<{
+    outputKey: string; uploadId: string; uploadSizeBytes: number; outputSha256: string;
+  }>();
+  if (!clip) return jsonError(c, "Render lease is invalid or expired.", 409);
+
+  const expectedCount = Math.ceil(clip.uploadSizeBytes / CLIP_OUTPUT_PART_BYTES);
+  const parts = await c.env.DB.prepare(
+    "SELECT part_number AS partNumber, etag, size_bytes AS sizeBytes FROM clip_output_parts WHERE clip_id = ?1 AND status = 'uploaded' ORDER BY part_number",
+  ).bind(body.clipId).all<{ partNumber: number; etag: string; sizeBytes: number }>();
+  if (parts.results.length !== expectedCount) return jsonError(c, "Some rendered MP4 parts are missing.", 409);
+  for (let i = 0; i < parts.results.length; i++) {
+    const part = parts.results[i];
+    const expectedBytes = Math.min(CLIP_OUTPUT_PART_BYTES, clip.uploadSizeBytes - i * CLIP_OUTPUT_PART_BYTES);
+    if (part.partNumber !== i + 1 || part.sizeBytes !== expectedBytes || !part.etag) {
+      return jsonError(c, "Rendered MP4 parts do not match the expected output size.", 409);
+    }
+  }
+
+  let stored: R2Object;
+  try {
+    stored = await c.env.MEDIA.resumeMultipartUpload(clip.outputKey, clip.uploadId)
+      .complete(parts.results.map((part) => ({ partNumber: part.partNumber, etag: part.etag })));
+  } catch {
+    const existingObject = await c.env.MEDIA.head(clip.outputKey);
+    if (!existingObject) return jsonError(c, "R2 could not finalize the rendered MP4. Retry completion.", 409);
+    stored = existingObject;
+  }
+  if (
+    stored.size !== clip.uploadSizeBytes ||
+    !clip.outputSha256 ||
+    stored.customMetadata?.sha256 !== clip.outputSha256
+  ) {
+    await c.env.MEDIA.delete(clip.outputKey);
+    return jsonError(c, "Stored MP4 size or output digest did not match the verified render.", 409);
+  }
+  const finished = await c.env.DB.prepare(
+    "UPDATE clips SET status = 'ready', progress = 100, output_size_bytes = ?1, upload_id = NULL, completed_at = CURRENT_TIMESTAMP, lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, error_code = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?2 AND lease_id = ?3 AND lease_token_hash = ?4 AND status = 'rendering' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP",
+  ).bind(stored.size, body.clipId, body.leaseId, tokenHash).run();
+  if (!finished.meta.changes) return jsonError(c, "Render lease expired before output registration.", 409);
+  return c.json({ clipId: body.clipId, status: "ready", sizeBytes: stored.size });
+});
+
+app.post("/internal/processor/render-fail", async (c) => {
+  const body = parseProcessorBody<{ clipId?: string; leaseId?: string; leaseToken?: string; errorCode?: string }>(c);
+  if (!body?.clipId || !body.leaseId || !body.leaseToken ||
+      typeof body.errorCode !== "string" || !/^[a-z0-9_]{1,60}$/.test(body.errorCode)) {
+    return jsonError(c, "Invalid render failure payload.", 400);
+  }
+  const tokenHash = await sha256Hex(body.leaseToken);
+  const result = await c.env.DB.prepare(
+    "UPDATE clips SET status = CASE WHEN cancel_requested = 1 THEN 'cancelled' ELSE 'failed' END, error_code = CASE WHEN cancel_requested = 1 THEN error_code ELSE ?1 END, lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?2 AND lease_id = ?3 AND lease_token_hash = ?4 AND status = 'rendering' AND lease_expires_at > CURRENT_TIMESTAMP RETURNING status",
+  ).bind(body.errorCode, body.clipId, body.leaseId, tokenHash).first<{ status: "failed" | "cancelled" }>();
+  if (!result) return jsonError(c, "Render lease is no longer valid.", 409);
+  return c.json({ ok: true, status: result.status });
 });
 
 app.post("/internal/processor/source-ready", async (c) => {
@@ -929,6 +1233,66 @@ app.patch("/api/candidates/:candidateId", async (c) => {
   return c.json({ candidate: result });
 });
 
+app.post("/api/candidates/:candidateId/render", async (c) => {
+  const body = await c.req.json<{ captions?: unknown; resolution?: unknown }>().catch(() => null);
+  const captions = body?.captions !== false;
+  const resolution = body?.resolution === undefined ? "1080x1920" : body.resolution;
+  if (resolution !== "1080x1920" && resolution !== "720x1280") {
+    return jsonError(c, "Choose 1080x1920 or 720x1280 output resolution.", 400);
+  }
+  const userId = c.get("user").id;
+  const candidateId = c.req.param("candidateId");
+  const candidate = await c.env.DB.prepare(
+    "SELECT candidates.id, candidates.job_id AS jobId, candidates.start_seconds AS startSeconds, candidates.end_seconds AS endSeconds, candidates.transcript_excerpt AS transcriptExcerpt FROM candidates INNER JOIN jobs ON jobs.id = candidates.job_id AND jobs.user_id = ?2 INNER JOIN source_assets ON source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id AND source_assets.status = 'ready' WHERE candidates.id = ?1 AND candidates.review_status = 'selected' AND jobs.transcript_verified_at IS NOT NULL",
+  ).bind(candidateId, userId).first<{
+    id: string; jobId: string; startSeconds: number; endSeconds: number; transcriptExcerpt: string | null;
+  }>();
+  if (!candidate) return jsonError(c, "Select a candidate from your own completed analysis before rendering.", 409);
+  const existing = await c.env.DB.prepare(
+    "SELECT id, job_id AS jobId, candidate_id AS candidateId, title, description, duration_seconds AS durationSeconds, aspect_ratio AS aspectRatio, status, progress, error_code AS errorCode, output_size_bytes AS outputSizeBytes, created_at AS createdAt, completed_at AS completedAt FROM clips WHERE candidate_id = ?1 AND user_id = ?2",
+  ).bind(candidateId, userId).first();
+  if (existing) return c.json({ clip: existing }, 200);
+
+  const id = uuid();
+  const mm = Math.floor(candidate.startSeconds / 60);
+  const ss = Math.floor(candidate.startSeconds % 60);
+  const title = `Highlight ${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+  const inserted = await c.env.DB.prepare(
+    "INSERT INTO clips (id, job_id, user_id, candidate_id, output_key, title, description, duration_seconds, aspect_ratio, status, progress, render_options_json) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, '9:16', 'queued', 0, ?9 WHERE EXISTS (SELECT 1 FROM candidates INNER JOIN jobs ON jobs.id = candidates.job_id AND jobs.user_id = ?3 INNER JOIN source_assets ON source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id AND source_assets.status = 'ready' WHERE candidates.id = ?4 AND candidates.review_status = 'selected' AND jobs.transcript_verified_at IS NOT NULL) ON CONFLICT(candidate_id) WHERE candidate_id IS NOT NULL DO NOTHING",
+  ).bind(
+    id, candidate.jobId, userId, candidate.id, `users/${userId}/clips/${id}.mp4`,
+    title, candidate.transcriptExcerpt, candidate.endSeconds - candidate.startSeconds,
+    JSON.stringify({ captions, resolution }),
+  ).run();
+  const clip = await c.env.DB.prepare(
+    "SELECT id, job_id AS jobId, title, status, progress, error_code AS errorCode, duration_seconds AS durationSeconds, created_at AS createdAt FROM clips WHERE candidate_id = ?1 AND user_id = ?2",
+  ).bind(candidateId, userId).first();
+  if (!clip) return jsonError(c, "The render job could not be queued.", 409);
+  return c.json({ clip }, inserted.meta.changes ? 202 : 200);
+});
+
+app.post("/api/clips/:clipId/cancel", async (c) => {
+  const result = await c.env.DB.prepare(
+    "UPDATE clips SET cancel_requested = 1, status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE status END, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND user_id = ?2 AND status IN ('queued','rendering')",
+  ).bind(c.req.param("clipId"), c.get("user").id).run();
+  if (!result.meta.changes) {
+    const existing = await c.env.DB.prepare(
+      "SELECT id, status FROM clips WHERE id = ?1 AND user_id = ?2",
+    ).bind(c.req.param("clipId"), c.get("user").id).first();
+    if (!existing) return jsonError(c, "Clip not found.", 404);
+    return c.json({ clip: existing, cancelled: false });
+  }
+  return c.json({ clipId: c.req.param("clipId"), cancelled: true });
+});
+
+app.post("/api/clips/:clipId/retry", async (c) => {
+  const result = await c.env.DB.prepare(
+    "UPDATE clips SET status = 'queued', progress = 0, error_code = NULL, cancel_requested = 0, lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND user_id = ?2 AND status = 'failed' AND EXISTS (SELECT 1 FROM candidates WHERE candidates.id = clips.candidate_id AND candidates.review_status = 'selected')",
+  ).bind(c.req.param("clipId"), c.get("user").id).run();
+  if (!result.meta.changes) return jsonError(c, "Clip cannot be retried; it may not exist or may not be failed.", 409);
+  return c.json({ clipId: c.req.param("clipId"), status: "queued" }, 202);
+});
+
 app.post("/api/jobs/:jobId/cancel", async (c) => {
   const user = c.get("user");
   const id = c.req.param("jobId");
@@ -965,11 +1329,101 @@ app.post("/api/jobs/cancel-all", async (c) => {
 
 app.get("/api/clips", async (c) => {
   const result = await c.env.DB.prepare(
-    "SELECT id, job_id AS jobId, title, description, hashtags_json AS hashtagsJson, duration_seconds AS durationSeconds, aspect_ratio AS aspectRatio, created_at AS createdAt FROM clips WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 100",
+    "SELECT id, job_id AS jobId, candidate_id AS candidateId, title, description, hashtags_json AS hashtagsJson, duration_seconds AS durationSeconds, aspect_ratio AS aspectRatio, status, progress, error_code AS errorCode, output_size_bytes AS outputSizeBytes, created_at AS createdAt, completed_at AS completedAt FROM clips WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 100",
   )
     .bind(c.get("user").id)
     .all();
   return c.json({ clips: result.results });
+});
+
+app.get("/api/clips/:clipId/preview", async (c) => {
+  const clip = await c.env.DB.prepare(
+    "SELECT output_key AS outputKey FROM clips WHERE id = ?1 AND user_id = ?2 AND status = 'ready'",
+  ).bind(c.req.param("clipId"), c.get("user").id).first<{ outputKey: string }>();
+  if (!clip) return jsonError(c, "Ready clip not found.", 404);
+  const metadata = await c.env.MEDIA.head(clip.outputKey);
+  if (!metadata) return jsonError(c, "The rendered MP4 is not available in private storage.", 404);
+
+  const rangeHeader = c.req.header("Range");
+  let offset = 0;
+  let length = metadata.size;
+  let status: 200 | 206 = 200;
+  let contentRange: string | null = null;
+  if (rangeHeader) {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+    if (!match || metadata.size < 1 || (!match[1] && !match[2])) {
+      return new Response(null, {
+        status: 416,
+        headers: {
+          "Content-Range": `bytes */${metadata.size}`,
+          "Accept-Ranges": "bytes",
+          "Cache-Control": "private, no-store",
+        },
+      });
+    }
+    if (!match[1]) {
+      const suffixLength = Number(match[2]);
+      if (!Number.isSafeInteger(suffixLength) || suffixLength < 1) {
+        return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${metadata.size}` } });
+      }
+      length = Math.min(suffixLength, metadata.size);
+      offset = metadata.size - length;
+    } else {
+      offset = Number(match[1]);
+      const requestedEnd = match[2] ? Number(match[2]) : metadata.size - 1;
+      if (
+        !Number.isSafeInteger(offset) || !Number.isSafeInteger(requestedEnd) ||
+        offset < 0 || requestedEnd < offset || offset >= metadata.size
+      ) {
+        return new Response(null, {
+          status: 416,
+          headers: {
+            "Content-Range": `bytes */${metadata.size}`,
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "private, no-store",
+          },
+        });
+      }
+      length = Math.min(requestedEnd, metadata.size - 1) - offset + 1;
+    }
+    status = 206;
+    contentRange = `bytes ${offset}-${offset + length - 1}/${metadata.size}`;
+  }
+
+  const object = await c.env.MEDIA.get(
+    clip.outputKey,
+    status === 206 ? { range: { offset, length } } : undefined,
+  );
+  if (!object) return jsonError(c, "The rendered MP4 is not available in private storage.", 404);
+  const headers = new Headers({
+    "Content-Type": "video/mp4",
+    "Content-Length": String(length),
+    "Content-Disposition": "inline",
+    "Accept-Ranges": "bytes",
+    "Cache-Control": "private, no-store",
+    "X-Content-Type-Options": "nosniff",
+  });
+  if (contentRange) headers.set("Content-Range", contentRange);
+  return new Response(object.body, { status, headers });
+});
+
+app.get("/api/clips/:clipId/download", async (c) => {
+  const clip = await c.env.DB.prepare(
+    "SELECT output_key AS outputKey, title FROM clips WHERE id = ?1 AND user_id = ?2 AND status = 'ready'",
+  ).bind(c.req.param("clipId"), c.get("user").id).first<{ outputKey: string; title: string }>();
+  if (!clip) return jsonError(c, "Ready clip not found.", 404);
+  const object = await c.env.MEDIA.get(clip.outputKey);
+  if (!object) return jsonError(c, "The rendered MP4 is not available in private storage.", 404);
+  const safeName = clip.title.normalize("NFKC").replace(/[^A-Za-z0-9 _-]/g, "").trim().slice(0, 80) || "clipforge-highlight";
+  return new Response(object.body, {
+    status: 200,
+    headers: {
+      "Content-Type": "video/mp4",
+      "Content-Length": String(object.size),
+      "Content-Disposition": `attachment; filename="${safeName}.mp4"`,
+      "Cache-Control": "private, no-store",
+    },
+  });
 });
 
 app.onError((error, c) => {

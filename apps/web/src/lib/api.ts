@@ -203,3 +203,106 @@ export async function reviewJobCandidate(
     },
   );
 }
+
+export interface UserClip {
+  id: string;
+  jobId: string;
+  candidateId: string | null;
+  title: string;
+  description: string | null;
+  durationSeconds: number | null;
+  aspectRatio: string;
+  status: "queued" | "rendering" | "ready" | "failed" | "cancelled";
+  progress: number;
+  errorCode: string | null;
+  outputSizeBytes: number | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export async function queueCandidateRender(
+  candidateId: string,
+  options: { captions: boolean; resolution: "1080x1920" | "720x1280" } = {
+    captions: true,
+    resolution: "1080x1920",
+  },
+): Promise<UserClip> {
+  const result = await request<{ clip: UserClip }>(
+    `/api/candidates/${encodeURIComponent(candidateId)}/render`,
+    { method: "POST", body: JSON.stringify(options) },
+  );
+  return result.clip;
+}
+
+export async function getClips(): Promise<UserClip[]> {
+  const result = await request<{ clips: UserClip[] }>("/api/clips");
+  return result.clips ?? [];
+}
+
+export function getClipDownloadUrl(clipId: string): string {
+  return `${API_BASE}/api/clips/${encodeURIComponent(clipId)}/download`;
+}
+
+export function getClipPreviewUrl(clipId: string): string {
+  return `${API_BASE}/api/clips/${encodeURIComponent(clipId)}/preview`;
+}
+
+export async function cancelClipRender(clipId: string): Promise<void> {
+  await request<{ cancelled: boolean }>(
+    `/api/clips/${encodeURIComponent(clipId)}/cancel`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
+export async function retryClipRender(clipId: string): Promise<void> {
+  await request<{ status: "queued" }>(
+    `/api/clips/${encodeURIComponent(clipId)}/retry`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
+export interface UserJob {
+  id: string;
+  sourceUrl: string;
+  sourcePlatform: "youtube" | "twitch";
+  sourceType: "unknown" | "live" | "video";
+  sourceDurationSeconds: number | null;
+  mediaDurationSeconds: number | null;
+  title: string | null;
+  status: "queued" | "processing" | "review" | "completed" | "failed" | "cancelled";
+  progress: number;
+  stage: string;
+  errorCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function getJobs(): Promise<UserJob[]> {
+  const result = await request<{ jobs: UserJob[] }>("/api/jobs");
+  return result.jobs ?? [];
+}
+
+export interface CurrentUser {
+  id: string;
+  email: string;
+}
+
+export async function getCurrentUser(): Promise<CurrentUser> {
+  const result = await request<{ user: CurrentUser }>("/api/me");
+  return result.user;
+}
+
+export interface UserSourceAsset {
+  id: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  status: "uploading" | "finalizing" | "ready" | "failed" | "deleting";
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export async function getSourceAssets(): Promise<UserSourceAsset[]> {
+  const result = await request<{ assets: UserSourceAsset[] }>("/api/source-assets");
+  return result.assets ?? [];
+}
