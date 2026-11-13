@@ -126,7 +126,7 @@ def test_clip_render_claim_is_owner_asset_and_selected_candidate_scoped() -> Non
         VALUES ('clip-1','job-1','user-1','candidate-1','users/user-1/clips/clip-1.mp4','Highlight',30,'queued')
         """
     )
-    sql = sql_for('app.post("/internal/processor/render-claim"', "UPDATE")
+    sql = sql_for('app.post("/internal/processor/render-claim"', "UPDATE clips SET status = 'rendering'")
     claimed = db.execute(sql, ("lease-1", "hash-1")).fetchone()
     assert claimed is not None
     assert claimed["id"] == "clip-1"
