@@ -149,9 +149,9 @@ export function LibraryPage() {
                     </Button>
                   ) : null}
                   {clip.status === "ready" ? (
-                    <a href={getClipDownloadUrl(clip.id)} className="inline-flex">
-                      <Button size="sm"><Download className="h-4 w-4" /> Download MP4</Button>
-                    </a>
+                    <Button size="sm" onClick={() => window.location.assign(getClipDownloadUrl(clip.id))}>
+                      <Download className="h-4 w-4" /> Download MP4
+                    </Button>
                   ) : null}
                 </div>
               </div>
