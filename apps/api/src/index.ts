@@ -13,6 +13,7 @@ type Bindings = {
 type Variables = {
   user: { id: string; email: string; subject: string };
   processorBody: string;
+  processorRawBody: Uint8Array;
 };
 
 type AppContext = Context<{ Bindings: Bindings; Variables: Variables }>;
@@ -22,6 +23,8 @@ const encoder = new TextEncoder();
 const SOURCE_ASSET_PART_BYTES = 8 * 1024 * 1024;
 const MAX_SOURCE_ASSET_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_SOURCE_ASSET_USER_BYTES = 8 * 1024 * 1024 * 1024;
+const CLIP_OUTPUT_PART_BYTES = 8 * 1024 * 1024;
+const MAX_CLIP_OUTPUT_BYTES = 512 * 1024 * 1024;
 const SOURCE_ASSET_EXTENSIONS: Record<string, readonly string[]> = {
   "video/mp4": [".mp4", ".m4v"],
   "video/quicktime": [".mov"],
@@ -64,10 +67,15 @@ async function verifyProcessorSignature(c: AppContext): Promise<boolean> {
   if (!secret || !/^\d{10}$/.test(timestamp) || !/^[a-f0-9]{32}$/i.test(nonce) || !signature) return false;
   const seconds = Number(timestamp);
   if (!Number.isFinite(seconds) || Math.abs(Date.now() / 1000 - seconds) > 300) return false;
-  const body = await c.req.text();
-  const canonical = [timestamp, nonce.toLowerCase(), c.req.method.toUpperCase(), new URL(c.req.url).pathname, body].join("\n");
+  const rawBody = new Uint8Array(await c.req.arrayBuffer());
+  const canonicalPrefix = encoder.encode(
+    [timestamp, nonce.toLowerCase(), c.req.method.toUpperCase(), new URL(c.req.url).pathname, ""].join("\n"),
+  );
+  const canonical = new Uint8Array(canonicalPrefix.length + rawBody.length);
+  canonical.set(canonicalPrefix);
+  canonical.set(rawBody, canonicalPrefix.length);
   const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
-  const valid = await crypto.subtle.verify("HMAC", key, signature, encoder.encode(canonical));
+  const valid = await crypto.subtle.verify("HMAC", key, signature, canonical);
   if (!valid) return false;
 
   // Consume a one-time nonce only after signature verification. The primary key
@@ -80,7 +88,9 @@ async function verifyProcessorSignature(c: AppContext): Promise<boolean> {
   ).bind(await sha256Hex(nonce.toLowerCase())).run();
   if (!consumed.meta.changes) return false;
 
-  c.set("processorBody", body);
+  const contentType = c.req.header("Content-Type") ?? "";
+  c.set("processorBody", contentType.includes("application/json") ? new TextDecoder().decode(rawBody) : "");
+  c.set("processorRawBody", rawBody);
   return true;
 }
 
