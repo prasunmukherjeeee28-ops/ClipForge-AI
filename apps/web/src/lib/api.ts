@@ -203,3 +203,56 @@ export async function reviewJobCandidate(
     },
   );
 }
+
+export interface UserClip {
+  id: string;
+  jobId: string;
+  candidateId: string | null;
+  title: string;
+  description: string | null;
+  durationSeconds: number | null;
+  aspectRatio: string;
+  status: "queued" | "rendering" | "ready" | "failed" | "cancelled";
+  progress: number;
+  errorCode: string | null;
+  outputSizeBytes: number | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export async function queueCandidateRender(
+  candidateId: string,
+  options: { captions: boolean; resolution: "1080x1920" | "720x1280" } = {
+    captions: true,
+    resolution: "1080x1920",
+  },
+): Promise<UserClip> {
+  const result = await request<{ clip: UserClip }>(
+    `/api/candidates/${encodeURIComponent(candidateId)}/render`,
+    { method: "POST", body: JSON.stringify(options) },
+  );
+  return result.clip;
+}
+
+export async function getClips(): Promise<UserClip[]> {
+  const result = await request<{ clips: UserClip[] }>("/api/clips");
+  return result.clips ?? [];
+}
+
+export function getClipDownloadUrl(clipId: string): string {
+  return `${API_BASE}/api/clips/${encodeURIComponent(clipId)}/download`;
+}
+
+export async function cancelClipRender(clipId: string): Promise<void> {
+  await request<{ cancelled: boolean }>(
+    `/api/clips/${encodeURIComponent(clipId)}/cancel`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
+export async function retryClipRender(clipId: string): Promise<void> {
+  await request<{ status: "queued" }>(
+    `/api/clips/${encodeURIComponent(clipId)}/retry`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
