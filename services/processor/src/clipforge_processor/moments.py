@@ -282,12 +282,26 @@ def detect_moments(
         second = min(duration_bins - 1, max(0, int(timestamp)))
         novelty_by_second[second] += count / math.sqrt(1.0 + all_markers[marker])
     novelty_prefix = _prefix(novelty_by_second)
+    # Use robust per-file baselines so a consistently loud game mix does not
+    # dominate. RMS catches level changes; ZCR adds a bounded texture/transient
+    # cue when sound character changes without a large volume increase.
     energy = [item.rms_dbfs for item in audio]
     energy_baseline = statistics.median(energy)
     energy_mad = statistics.median(abs(value - energy_baseline) for value in energy) or 1.0
-    audio_spikes = [
+    rms_spikes = [
         max(0.0, min(1.0, (value - energy_baseline - 2.0) / max(6.0, energy_mad * 4.0)))
         for value in energy
+    ]
+    zero_crossings = [item.zero_crossing_rate for item in audio]
+    zcr_baseline = statistics.median(zero_crossings)
+    zcr_mad = statistics.median(abs(value - zcr_baseline) for value in zero_crossings) or 0.01
+    zcr_spikes = [
+        max(0.0, min(1.0, (value - zcr_baseline - max(0.01, zcr_mad * 2.0)) / max(0.05, zcr_mad * 4.0)))
+        for value in zero_crossings
+    ]
+    audio_spikes = [
+        0.75 * rms_spike + 0.25 * zcr_spike
+        for rms_spike, zcr_spike in zip(rms_spikes, zcr_spikes, strict=True)
     ]
     spike_prefix = _prefix(audio_spikes)
 
