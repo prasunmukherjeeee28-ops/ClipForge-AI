@@ -342,7 +342,14 @@ async def run_once() -> int:
                 cancelled,
                 lease_lost,
             )
-            candidate_payload = [candidate.as_dict() for candidate in candidates]
+            candidate_payload = []
+            for candidate in candidates:
+                item = candidate.as_dict()
+                item["candidateId"] = str(uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"clipforge:{job_id}:{item['startSeconds']:.3f}:{item['endSeconds']:.3f}",
+                ))
+                candidate_payload.append(item)
             await _with_lease(
                 client.report_progress(job_id, lease_id, lease_token, "persisting_moments", 68),
                 cancelled,
