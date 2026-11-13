@@ -256,7 +256,7 @@ def render_vertical_clip(
         )
         if tracked_filter:
             filter_complex = (
-                f"[0:v]{tracked_filter},setsar=1,fps=30,{subtitles_filter}[v]"
+                f"[0:v]setpts=PTS-STARTPTS,{tracked_filter},setsar=1,fps=30,{subtitles_filter}[v]"
             )
         else:
             filter_complex = (
