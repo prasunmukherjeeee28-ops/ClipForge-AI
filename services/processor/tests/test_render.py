@@ -122,7 +122,7 @@ def test_tracked_subject_filter_creates_bounded_smooth_portrait_crop() -> None:
     assert graph is not None
     assert graph.startswith("crop=608:1080:")
     assert "scale=1080:1920" in graph
-    assert "if(lt(t,1.000)" in graph
+    assert "if(lt(t,11.000)" in graph
 
 
 def test_tracked_subject_filter_returns_none_without_observations() -> None:
