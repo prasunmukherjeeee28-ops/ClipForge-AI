@@ -36,8 +36,8 @@ class FakeResponse:
 def test_gemini_adapter_refines_scores_and_returns_grounded_titles(monkeypatch) -> None:
     captured = {}
 
-    def fake_post(url, *, params, json, timeout):
-        captured.update({"url": url, "params": params, "body": json, "timeout": timeout})
+    def fake_post(url, *, headers, json, timeout):
+        captured.update({"url": url, "headers": headers, "body": json, "timeout": timeout})
         return FakeResponse({
             "candidates": [{
                 "content": {
@@ -78,7 +78,7 @@ def test_gemini_adapter_ignores_duplicate_or_out_of_range_indices(monkeypatch) -
                 "content": {"parts": [{
                     "text": json_module.dumps({"highlights": [
                         {"index": 90, "score": 1.0, "category": "action", "title_hint": "Invented", "rationale": "bad"},
-                        {"index": 0, "score": 0.8, "category": "action", "title_hint": None, "rationale": "Valid action"},
+                        {"index": 0, "score": 0.8, "category": "action", "title_hint": "", "rationale": "Valid action"},
                         {"index": 0, "score": 1.0, "category": "funny", "title_hint": "Duplicate", "rationale": "duplicate"},
                     ]})
                 }]}
