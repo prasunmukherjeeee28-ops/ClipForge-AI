@@ -20,7 +20,7 @@ Authenticated JSON API behind Cloudflare Access. Every user-facing resource quer
   `{ "urls": ["https://..."], "options": { "captions": true, "vertical": true, "reviewScores": true, "instruction": "..." } }`
 - `GET /api/jobs` — list the current user's jobs, including verified source metadata when available.
 - `GET /api/jobs/:jobId` — status/progress and verified source metadata for an owned job.
-- `POST /api/jobs/:jobId/cancel` — cancel one owned queued job or request cancellation of a processing job.
+- `POST /api/jobs/:jobId/cancel` — cancel one owned queued job or a job still waiting for a source asset, or request cancellation of a processing job.
 - `POST /api/jobs/cancel-all` — request cancellation of all active jobs for the current user.
 - `GET /api/clips` — list the current user's clip metadata.
 
@@ -44,11 +44,12 @@ Routes:
 - `POST /internal/processor/heartbeat` with `{"jobId":"...","leaseId":"...","leaseToken":"..."}`: extends the 90-second lease and returns whether cancellation was requested.
 - `POST /internal/processor/progress` with lease fields plus `stage` and `progress` (integer 0–99): updates stage/progress only for the active lease and while cancellation is not requested.
 - `POST /internal/processor/source-metadata` with lease fields plus `sourceId`, `sourceType` (`video` or `live`), `title`, optional `durationSeconds` (0–604800) and optional ISO `publishedAt`: persists verified metadata only for the active unexpired lease. It cannot change another user's job or a cancellation-requested job.
+- `POST /internal/processor/source-ready` with lease fields: moves a VOD to `review` / `source_ready` only when a ready asset owned by the same user is attached; clears the lease.
 - `POST /internal/processor/release` with lease fields: safely releases a test claim back to queued, or marks it cancelled if cancellation was requested.
 - `POST /internal/processor/fail` with lease fields plus a lowercase `errorCode` (1–60 characters, letters/numbers/underscores): records a terminal processing failure, clears the lease, or marks the job cancelled if cancellation was requested. Expired or stale leases are rejected.
 - `POST /internal/processor/complete` with lease fields and optional `title` (up to 200 characters): marks an owned active job completed with progress 100 and clears its lease. It rejects stale/expired leases and jobs with cancellation requested. This callback records job completion only; media registration/download remains a later milestone.
 
-The Worker stores only SHA-256 of the lease token. A lease is valid only for its job and lease ID. Expired processing jobs are requeued until `max_attempts` is reached, then marked failed. Expired jobs with a cancellation request become cancelled. The initial Python client is a connectivity/claim smoke test and releases jobs; it does not process media.
+The Worker stores only SHA-256 of the lease token. A lease is valid only for its job and lease ID. Expired processing jobs are requeued until `max_attempts` is reached, then marked failed. Expired jobs with a cancellation request become cancelled. The current Python worker claims only jobs with a ready attached source asset, checks official platform metadata, then moves a valid VOD to `source_ready`. It does not yet read the R2 object or run FFprobe, transcription, moment detection or clip rendering.
 
 ## Job states
 `review` / `awaiting_source_asset` → `queued` (ready asset attached) → `processing` → `review` / `source_ready` (metadata verified). Later media-analysis and rendering states are not implemented yet. Failures and cancellation transition to `failed` or `cancelled`. A processing job can expose stage `cancellation_requested` until the worker acknowledges cancellation or its lease expires.
@@ -80,6 +81,6 @@ A URL job is created in `review` with stage `awaiting_source_asset`. It cannot b
 - `GET /api/source-assets` lists only the authenticated user's assets.
 - `DELETE /api/source-assets/:assetId` atomically reserves deletion only if no active job is attached and no part upload/finalization is running. A `deleting` asset cannot be attached to a job; failed storage cleanup can be retried.
 
-Limits are 2 GiB per file and 8 GiB per account across uploading/ready source assets. R2 objects use server-generated owner-scoped keys. The processor claims only jobs with a ready, owner-matched source asset; after official metadata confirms a VOD, `POST /internal/processor/source-ready` moves the job to `review` / `source_ready` and clears its lease. Live/upcoming sources remain unsupported by the VOD pipeline.
+Limits are 2 GiB per file and 8 GiB per account across uploading, finalizing, ready and deleting source assets. R2 objects use server-generated owner-scoped keys. The processor claims only jobs with a ready, owner-matched source asset; after official metadata confirms a VOD, `POST /internal/processor/source-ready` moves the job to `review` / `source_ready` and clears its lease. Live/upcoming sources remain unsupported by the VOD pipeline. Asset states use `uploading` → `finalizing` → `ready`; deletion atomically reserves the `deleting` state so a job cannot attach the asset while storage cleanup is in progress.
 
 The declared MIME type and filename are not proof of the actual file format. Processor-side R2 retrieval, FFprobe validation, audio extraction, transcription, AI moment detection, rendering, and frontend upload integration remain future work. No Cloudflare resources are created or deployed by this code change.
