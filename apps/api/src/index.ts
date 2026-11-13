@@ -544,19 +544,20 @@ app.post("/internal/processor/render-source", async (c) => {
 });
 
 app.post("/internal/processor/render-upload-init", async (c) => {
-  const body = parseProcessorBody<{ clipId?: string; leaseId?: string; leaseToken?: string; sizeBytes?: number }>(c);
+  const body = parseProcessorBody<{ clipId?: string; leaseId?: string; leaseToken?: string; sizeBytes?: number; sha256?: string }>(c);
   if (
     !body?.clipId || !body.leaseId || !body.leaseToken ||
-    !Number.isSafeInteger(body.sizeBytes) || body.sizeBytes! < 1 || body.sizeBytes! > MAX_CLIP_OUTPUT_BYTES
+    !Number.isSafeInteger(body.sizeBytes) || body.sizeBytes! < 1 || body.sizeBytes! > MAX_CLIP_OUTPUT_BYTES ||
+    typeof body.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(body.sha256)
   ) return jsonError(c, "Invalid clip upload initialization payload.", 400);
   const tokenHash = await sha256Hex(body.leaseToken);
   const clip = await c.env.DB.prepare(
-    "SELECT output_key AS outputKey, upload_id AS uploadId, upload_size_bytes AS uploadSizeBytes FROM clips WHERE id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'rendering' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP",
+    "SELECT output_key AS outputKey, upload_id AS uploadId, upload_size_bytes AS uploadSizeBytes, output_sha256 AS outputSha256 FROM clips WHERE id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'rendering' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP",
   ).bind(body.clipId, body.leaseId, tokenHash).first<{
-    outputKey: string; uploadId: string | null; uploadSizeBytes: number | null;
+    outputKey: string; uploadId: string | null; uploadSizeBytes: number | null; outputSha256: string | null;
   }>();
   if (!clip) return jsonError(c, "Render lease is invalid or expired.", 409);
-  if (clip.uploadId && clip.uploadSizeBytes === body.sizeBytes) {
+  if (clip.uploadId && clip.uploadSizeBytes === body.sizeBytes && clip.outputSha256 === body.sha256) {
     const uploaded = await c.env.DB.prepare(
       "SELECT part_number AS partNumber, size_bytes AS sizeBytes FROM clip_output_parts WHERE clip_id = ?1 AND status = 'uploaded' ORDER BY part_number",
     ).bind(body.clipId).all();
@@ -573,11 +574,11 @@ app.post("/internal/processor/render-upload-init", async (c) => {
   }
   const multipart = await c.env.MEDIA.createMultipartUpload(clip.outputKey, {
     httpMetadata: { contentType: "video/mp4" },
-    customMetadata: { clipId: body.clipId },
+    customMetadata: { clipId: body.clipId, sha256: body.sha256 },
   });
   const updated = await c.env.DB.prepare(
-    "UPDATE clips SET upload_id = ?1, upload_size_bytes = ?2, updated_at = CURRENT_TIMESTAMP WHERE id = ?3 AND lease_id = ?4 AND lease_token_hash = ?5 AND status = 'rendering' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP",
-  ).bind(multipart.uploadId, body.sizeBytes, body.clipId, body.leaseId, tokenHash).run();
+    "UPDATE clips SET upload_id = ?1, upload_size_bytes = ?2, output_sha256 = ?3, updated_at = CURRENT_TIMESTAMP WHERE id = ?4 AND lease_id = ?5 AND lease_token_hash = ?6 AND status = 'rendering' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP",
+  ).bind(multipart.uploadId, body.sizeBytes, body.sha256, body.clipId, body.leaseId, tokenHash).run();
   if (!updated.meta.changes) {
     await multipart.abort().catch(() => undefined);
     return jsonError(c, "Render lease changed while initializing the output upload.", 409);
