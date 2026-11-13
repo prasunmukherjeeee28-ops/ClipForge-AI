@@ -12,12 +12,13 @@ from typing import Awaitable, TypeVar
 from .client import ProcessorClient
 from .config import Settings
 from .media import MediaProcessingError, extract_audio, probe_media
-from .moments import detect_moments
+from .moments import apply_visual_evidence, detect_moments
 from .moment_scoring import LocalHeuristicAdapter, MomentEvidence
 from .semantic_scoring import GeminiSemanticAdapter
 from .render import render_vertical_clip
 from .source_adapters import SourceInspectionError, inspect_video_url
 from .transcription_runner import run_transcription_process
+from .visual_analysis import VisualAnalysisError, VisualEvidence, analyze_candidate_windows
 
 T = TypeVar("T")
 
@@ -408,6 +409,56 @@ async def run_once() -> int:
                 cancelled,
                 lease_lost,
             )
+
+            # Sample only the strongest audio/transcript windows. Motion and scene
+            # changes work without a model; people/vehicle tracks are enabled when
+            # a compatible local ONNX model is configured.
+            visual_evidence: dict[tuple[float, float], VisualEvidence] = {}
+            visual_windows = [
+                (item.start_seconds, item.end_seconds, item.score)
+                for item in candidates
+            ]
+            try:
+                await _with_lease(
+                    client.report_progress(job_id, lease_id, lease_token, "analyzing_moments", 66),
+                    cancelled,
+                    lease_lost,
+                )
+                try:
+                    visual_evidence = await _with_lease(
+                        asyncio.to_thread(
+                            analyze_candidate_windows,
+                            source_path,
+                            visual_windows,
+                            model_path=settings.object_detector_model_path,
+                            max_windows=16,
+                            max_samples=240,
+                        ),
+                        cancelled,
+                        lease_lost,
+                    )
+                except VisualAnalysisError:
+                    if not settings.object_detector_model_path:
+                        raise
+                    # A missing/incompatible optional ONNX file must not disable
+                    # motion and scene-change analysis.
+                    visual_evidence = await _with_lease(
+                        asyncio.to_thread(
+                            analyze_candidate_windows,
+                            source_path,
+                            visual_windows,
+                            model_path=None,
+                            max_windows=16,
+                            max_samples=240,
+                        ),
+                        cancelled,
+                        lease_lost,
+                    )
+                candidates = apply_visual_evidence(candidates, visual_evidence)
+                print("Visual candidate analysis completed:", len(visual_evidence))
+            except VisualAnalysisError as exc:
+                print("Visual analysis unavailable; using audio/transcript ranking:", str(exc))
+
             candidate_payload = []
             for candidate in candidates:
                 item = candidate.as_dict()
@@ -513,6 +564,23 @@ async def run_once() -> int:
                             max_output_bytes=500_000_000,
                             threads=settings.ffmpeg_threads,
                             cancel_event=render_cancel,
+                            subject_observations=(
+                                list(visual_evidence.get((
+                                    round(start_seconds, 3), round(end_seconds, 3)
+                                )).focus_observations)
+                                if visual_evidence.get((round(start_seconds, 3), round(end_seconds, 3)))
+                                else ()
+                            ),
+                            subject_frame_width=(
+                                visual_evidence[(round(start_seconds, 3), round(end_seconds, 3))].frame_width
+                                if (round(start_seconds, 3), round(end_seconds, 3)) in visual_evidence
+                                else None
+                            ),
+                            subject_frame_height=(
+                                visual_evidence[(round(start_seconds, 3), round(end_seconds, 3))].frame_height
+                                if (round(start_seconds, 3), round(end_seconds, 3)) in visual_evidence
+                                else None
+                            ),
                         ),
                         cancelled,
                         lease_lost,
