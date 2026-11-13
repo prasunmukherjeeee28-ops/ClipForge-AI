@@ -128,7 +128,8 @@ CREATE TABLE IF NOT EXISTS clips (
   max_attempts INTEGER NOT NULL DEFAULT 3 CHECK(max_attempts >= 1),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  completed_at TEXT
+  completed_at TEXT,
+  cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK(cancel_requested IN (0,1))
 );
 
 CREATE TABLE IF NOT EXISTS clip_output_parts (
