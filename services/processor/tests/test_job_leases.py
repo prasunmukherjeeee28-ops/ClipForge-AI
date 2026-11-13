@@ -371,6 +371,25 @@ def test_clip_list_query_hides_another_users_clips() -> None:
     assert {row["id"] for row in rows} == {"clip-owner"}
 
 
+
+def test_clip_preview_lookup_is_scoped_to_authenticated_user() -> None:
+    db = make_db()
+    add_user_and_job(db, "user-2", "friend-job")
+    db.execute(
+        "INSERT INTO clips (id, job_id, user_id, output_key, title) VALUES (?, ?, ?, ?, ?)",
+        ("clip-owner", "job-1", "user-1", "users/user-1/clips/clip-owner.mp4", "Mine"),
+    )
+    db.execute(
+        "INSERT INTO clips (id, job_id, user_id, output_key, title) VALUES (?, ?, ?, ?, ?)",
+        ("clip-friend", "friend-job", "user-2", "users/user-2/clips/clip-friend.mp4", "Friend"),
+    )
+    preview_sql = api_sql_containing(
+        "SELECT output_key AS outputKey FROM clips WHERE id = ?1 AND user_id = ?2"
+    )
+    assert db.execute(preview_sql, ("clip-owner", "user-1")).fetchone() is not None
+    assert db.execute(preview_sql, ("clip-friend", "user-1")).fetchone() is None
+
+
 def test_cancel_all_query_only_marks_authenticated_users_jobs() -> None:
     db = make_db()
     add_user_and_job(db, "user-1", "own-queued-job")
