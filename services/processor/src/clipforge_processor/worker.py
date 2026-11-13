@@ -12,6 +12,7 @@ from .config import Settings
 from .media import MediaProcessingError, extract_audio, probe_media
 from .source_adapters import SourceInspectionError, inspect_video_url
 from .transcription_runner import run_transcription_process
+from .moments_runner import run_moment_process
 
 T = TypeVar("T")
 
@@ -270,7 +271,7 @@ async def run_once() -> int:
                 cancelled,
                 lease_lost,
             )
-            result = await _with_lease(
+            await _with_lease(
                 client.report_transcription_ready(
                     job_id, lease_id, lease_token,
                     container=probe.container,
@@ -289,7 +290,35 @@ async def run_once() -> int:
                 cancelled,
                 lease_lost,
             )
-            # The manifest and audio.wav are retained for the next processor stage.
+            await _with_lease(
+                client.report_progress(job_id, lease_id, lease_token, "analyzing_moments", 62),
+                cancelled,
+                lease_lost,
+            )
+            candidates = await _with_lease(
+                run_moment_process(
+                    audio_path=audio_path,
+                    transcript_path=Path(transcription["path"]),
+                    output_path=job_dir / "moments.json",
+                    settings=settings,
+                ),
+                cancelled,
+                lease_lost,
+            )
+            await _with_lease(
+                client.report_progress(job_id, lease_id, lease_token, "saving_moments", 72),
+                cancelled,
+                lease_lost,
+            )
+            result = await _with_lease(
+                client.report_moments_ready(
+                    job_id, lease_id, lease_token,
+                    candidates=candidates,
+                ),
+                cancelled,
+                lease_lost,
+            )
+            # Audio, transcript and moments remain private processor artifacts for rendering.
             print(
                 "Media preparation finished:",
                 json.dumps(
@@ -303,7 +332,8 @@ async def run_once() -> int:
                         "transcriptPath": transcription["path"],
                         "transcriptSegments": transcription["segment_count"],
                         "transcriptLanguage": transcription["language"],
-                        "outcome": "transcribed",
+                        "candidateCount": len(candidates),
+                        "outcome": "moments_detected",
                         "result": result,
                     },
                     ensure_ascii=False,
