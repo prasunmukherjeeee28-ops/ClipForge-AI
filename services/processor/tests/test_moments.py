@@ -44,6 +44,35 @@ def test_extract_audio_seconds_reports_rms_and_zero_crossings(tmp_path: Path) ->
     assert features[2].rms_dbfs < -100
 
 
+def test_zero_crossing_texture_change_contributes_to_acoustic_salience(tmp_path: Path) -> None:
+    audio = tmp_path / "texture.wav"
+    transcript = tmp_path / "transcript.json"
+    sample_rate = 16000
+    samples = array("h")
+    for second in range(30):
+        if 10 <= second < 16:
+            # Same RMS amplitude, but a much higher zero-crossing rate.
+            samples.extend([12000 if index % 2 else -12000 for index in range(sample_rate)])
+        else:
+            # A 100 Hz square wave with the same amplitude.
+            samples.extend([12000 if (index // 80) % 2 else -12000 for index in range(sample_rate)])
+    with wave.open(str(audio), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(sample_rate)
+        output.writeframes(samples.tobytes())
+    make_transcript(transcript, [
+        {"start": 9, "end": 12, "text": "Wait what just happened"},
+        {"start": 13, "end": 16, "text": "No way let's go"},
+    ])
+
+    candidates = detect_moments(
+        audio, transcript, window_seconds=(15,), step_seconds=1, score_threshold=0
+    )
+    assert candidates
+    assert max(item.acoustic_salience for item in candidates) > 0
+
+
 def test_detect_moments_fuses_audio_and_transcript_and_returns_explanations(tmp_path: Path) -> None:
     audio = tmp_path / "audio.wav"
     transcript = tmp_path / "transcript.json"
