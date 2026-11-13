@@ -485,9 +485,32 @@ app.put("/api/source-assets/:assetId/parts/:partNumber", async (c) => {
 app.post("/api/source-assets/:assetId/complete", async (c) => {
   const assetId = c.req.param("assetId");
   const asset = await c.env.DB.prepare(
-    "SELECT object_key AS objectKey, upload_id AS uploadId, size_bytes AS sizeBytes FROM source_assets WHERE id = ?1 AND user_id = ?2 AND status = 'uploading'",
-  ).bind(assetId, c.get("user").id).first<{ objectKey: string; uploadId: string; sizeBytes: number }>();
+    "SELECT object_key AS objectKey, upload_id AS uploadId, size_bytes AS sizeBytes, status FROM source_assets WHERE id = ?1 AND user_id = ?2 AND status IN ('uploading','finalizing')",
+  ).bind(assetId, c.get("user").id).first<{ objectKey: string; uploadId: string; sizeBytes: number; status: "uploading" | "finalizing" }>();
   if (!asset) return jsonError(c, "Active source upload not found.", 404);
+
+  if (asset.status === "finalizing") {
+    // Recover a request that completed R2 but failed before it could update D1.
+    const existingObject = await c.env.MEDIA.head(asset.objectKey);
+    if (existingObject) {
+      if (existingObject.size !== asset.sizeBytes) {
+        await c.env.MEDIA.delete(asset.objectKey);
+        await c.env.DB.prepare(
+          "UPDATE source_assets SET status = 'failed', upload_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND user_id = ?2 AND status = 'finalizing'",
+        ).bind(assetId, c.get("user").id).run();
+        return jsonError(c, "Stored file size did not match the declared size; upload rejected.", 409);
+      }
+      const recovered = await c.env.DB.prepare(
+        "UPDATE source_assets SET status = 'ready', upload_id = NULL, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND user_id = ?2 AND status = 'finalizing' AND upload_id = ?3",
+      ).bind(assetId, c.get("user").id, asset.uploadId).run();
+      if (!recovered.meta.changes) return jsonError(c, "Upload state changed while recovering finalization.", 409);
+      return c.json({ assetId, status: "ready", sizeBytes: existingObject.size });
+    }
+
+    await c.env.DB.prepare(
+      "UPDATE source_assets SET status = 'uploading', updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND user_id = ?2 AND status = 'finalizing' AND upload_id = ?3",
+    ).bind(assetId, c.get("user").id, asset.uploadId).run();
+  }
 
   const expectedCount = Math.ceil(asset.sizeBytes / SOURCE_ASSET_PART_BYTES);
   const parts = await c.env.DB.prepare(
@@ -520,7 +543,7 @@ app.post("/api/source-assets/:assetId/complete", async (c) => {
     // A network failure can happen after R2 finalized the object. Detect that
     // case before reopening the multipart upload for a safe client retry.
     const existingObject = await c.env.MEDIA.head(asset.objectKey);
-    if (existingObject && existingObject.size === asset.sizeBytes) {
+    if (existingObject) {
       storedObject = existingObject;
     } else {
       await c.env.DB.prepare(
