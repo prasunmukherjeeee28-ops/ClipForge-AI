@@ -19,6 +19,7 @@ ALTER TABLE clips ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3
   CHECK(max_attempts >= 1);
 ALTER TABLE clips ADD COLUMN updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;
 ALTER TABLE clips ADD COLUMN completed_at TEXT;
+ALTER TABLE clips ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK(cancel_requested IN (0,1));
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_clips_candidate_unique
   ON clips(candidate_id) WHERE candidate_id IS NOT NULL;
