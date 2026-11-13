@@ -455,8 +455,29 @@ app.post("/internal/processor/render-claim", async (c) => {
   }
 
   await c.env.DB.prepare(
-    "UPDATE clips SET status = 'cancelled', lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, upload_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'rendering' AND cancel_requested = 1 AND lease_expires_at <= CURRENT_TIMESTAMP",
+    "UPDATE clips SET status = 'cancelled', lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'rendering' AND cancel_requested = 1 AND lease_expires_at <= CURRENT_TIMESTAMP",
   ).run();
+
+  // Cancellation can race with a processor crash. Keep the upload ID until
+  // R2 confirms that the abandoned multipart session has actually been aborted.
+  const cancelledUploads = await c.env.DB.prepare(
+    "SELECT id, output_key AS outputKey, upload_id AS uploadId FROM clips WHERE status = 'cancelled' AND upload_id IS NOT NULL LIMIT 100",
+  ).all<{ id: string; outputKey: string; uploadId: string }>();
+  for (const cancelled of cancelledUploads.results) {
+    try {
+      await c.env.MEDIA.resumeMultipartUpload(cancelled.outputKey, cancelled.uploadId).abort();
+      await c.env.DB.batch([
+        c.env.DB.prepare(
+          "DELETE FROM clip_output_parts WHERE clip_id = ?1",
+        ).bind(cancelled.id),
+        c.env.DB.prepare(
+          "UPDATE clips SET upload_id = NULL, upload_size_bytes = NULL, output_sha256 = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND status = 'cancelled' AND upload_id = ?2",
+        ).bind(cancelled.id, cancelled.uploadId),
+      ]);
+    } catch {
+      // Retain the upload ID so a later poll can retry cleanup.
+    }
+  }
   await c.env.DB.prepare(
     "UPDATE clips SET status = 'failed', error_code = 'render_retries_exhausted', lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'rendering' AND lease_expires_at <= CURRENT_TIMESTAMP AND attempt_count >= max_attempts AND cancel_requested = 0",
   ).run();
