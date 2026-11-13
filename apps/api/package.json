@@ -7,7 +7,7 @@
     "dev": "wrangler dev",
     "deploy": "npm run build:web && wrangler deploy",
     "typecheck": "tsc --noEmit",
-    "build:web": "npm --prefix ../web run build"
+    "build:web": "npm --prefix ../web install && npm --prefix ../web run build"
   },
   "dependencies": {
     "hono": "^4.10.4",
