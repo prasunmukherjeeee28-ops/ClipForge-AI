@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import uuid
@@ -248,9 +249,11 @@ async def _run_render_once(client: ProcessorClient, settings: Settings) -> int:
             lease_lost,
         )
 
+        with output_path.open("rb") as rendered_file:
+            output_sha256 = hashlib.file_digest(rendered_file, "sha256").hexdigest()
         upload = await _with_lease(
             client.render_upload_init(
-                clip_id, lease_id, lease_token, result.size_bytes
+                clip_id, lease_id, lease_token, result.size_bytes, output_sha256
             ),
             cancelled,
             lease_lost,
