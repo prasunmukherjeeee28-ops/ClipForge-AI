@@ -42,7 +42,7 @@ const statusTone: Record<JobRecord["status"], "violet" | "green" | "amber" | "zi
 };
 
 function stageLabel(stage: string): string {
-  return stage.replaceAll("_", " ").replace(/\\b\\w/g, (letter) => letter.toUpperCase());
+  return stage.replace(/_/g, " ").replace(/\\b\\w/g, (letter) => letter.toUpperCase());
 }
 
 function formatCreatedAt(value: string): string {
