@@ -163,13 +163,19 @@ export function UploadPage() {
         setSession(active);
       }
 
-      const assetState = await getSourceAsset(active.assetId);
+      if (!active || !active.jobId || !active.assetId) {
+        throw new Error("The source upload session could not be initialized.");
+      }
+      const jobId = active.jobId;
+      const assetId = active.assetId;
+
+      const assetState = await getSourceAsset(assetId);
       if (assetState.asset.status === "failed" || assetState.asset.status === "deleting") {
         throw new Error("This source upload is no longer available. Discard it and start again.");
       }
 
       if (assetState.asset.status !== "ready") {
-        const uploadInfo = await getSourceAsset(active.assetId);
+        const uploadInfo = await getSourceAsset(assetId);
         const uploaded = new Set(uploadInfo.uploadedParts.map((part) => part.partNumber));
         let uploadedBytes = uploadInfo.uploadedParts.reduce((sum, part) => sum + part.sizeBytes, 0);
         setProgress(Math.min(99, (uploadedBytes / file.size) * 100));
@@ -179,17 +185,17 @@ export function UploadPage() {
           const start = (partNumber - 1) * 8 * 1024 * 1024;
           const end = Math.min(file.size, start + 8 * 1024 * 1024);
           const chunk = file.slice(start, end);
-          await uploadSourcePart(active.assetId, partNumber, chunk);
+          await uploadSourcePart(assetId, partNumber, chunk);
           uploadedBytes += chunk.size;
           setProgress(Math.min(99, (uploadedBytes / file.size) * 100));
         }
 
-        await completeSourceAsset(active.assetId);
+        await completeSourceAsset(assetId);
       }
 
-      await attachSourceAsset(active.jobId, active.assetId);
+      await attachSourceAsset(jobId, assetId);
       setProgress(100);
-      setSubmittedJobId(active.jobId);
+      setSubmittedJobId(jobId);
       setPhase("submitted");
       setError(null);
     } catch (cause) {
