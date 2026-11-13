@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from pathlib import Path
@@ -27,6 +28,7 @@ def make_db() -> sqlite3.Connection:
         "0005_authorized_source_assets.sql",
         "0006_media_validation.sql",
         "0007_transcription.sql",
+        "0008_moment_candidates.sql",
     ):
         db.executescript((ROOT / "database/migrations" / migration).read_text())
     db.executemany(
@@ -196,7 +198,7 @@ def test_transcription_ready_persists_media_and_transcript_metadata() -> None:
         """
     ).fetchone()
     assert tuple(row) == (
-        "transcribed", 60, "mov,mp4,m4a", 4_000_044,
+        "moments_ready", 70, "mov,mp4,m4a", 4_000_044,
         "base", "en", 42, 12_345, "a" * 64, None,
     )
 
@@ -215,3 +217,55 @@ def test_transcription_ready_rejects_stale_expired_cancelled_and_wrong_owner() -
 
     for job_id in ("stale", "expired", "cancelled", "wrong-owner"):
         assert db.execute(sql, transcription_ready_values(job_id)).fetchone() is None
+
+
+
+def moment_candidate_insert_sql() -> str:
+    marker = 'app.post("/internal/processor/transcription-ready"'
+    section = API_SOURCE.split(marker, 1)[1].split("\napp.post(", 1)[0]
+    match = re.search(r"`(INSERT INTO candidates[\s\S]+?)`", section)
+    assert match, "Could not find owner-lease-scoped moment candidate INSERT"
+    return match.group(1)
+
+
+def test_moment_candidates_are_persisted_only_for_the_active_owner_lease() -> None:
+    db = make_db()
+    add_asset(db, "asset-1", "user-1")
+    add_asset(db, "friend-asset", "user-2")
+    add_asset(db, "foreign-asset", "user-1")
+    add_job(db, "job-1", "user-1", "asset-1")
+    add_job(db, "friend-job", "user-2", "friend-asset")
+    sql = moment_candidate_insert_sql()
+    payload = json.dumps([{
+        "startSeconds": 12.0,
+        "endSeconds": 42.0,
+        "score": 0.82,
+        "signals": {
+            "acousticSalience": 0.7,
+            "transcriptVelocity": 0.8,
+            "narrativeArc": 0.9,
+            "novelty": 0.75,
+        },
+        "wordCount": 48,
+        "markerCount": 2,
+        "rationale": "high speech/marker activity, context on both sides of a peak",
+    }])
+
+    inserted = db.execute(sql, ("job-1", "lease-1", "hash-1", payload))
+    assert inserted.rowcount == 1
+    row = db.execute(
+        """
+        SELECT candidates.start_seconds, candidates.end_seconds, candidates.score,
+               candidates.narrative_arc, jobs.user_id
+        FROM candidates JOIN jobs ON jobs.id = candidates.job_id
+        WHERE candidates.job_id = 'job-1'
+        """
+    ).fetchone()
+    assert tuple(row) == (12.0, 42.0, 0.82, 0.9, "user-1")
+
+    stale = db.execute(sql, ("job-1", "stale-lease", "hash-1", payload))
+    db.execute("UPDATE jobs SET source_asset_id = 'foreign-asset' WHERE id = 'friend-job'")
+    wrong_owner_asset = db.execute(sql, ("friend-job", "lease-1", "hash-1", payload))
+    assert stale.rowcount == 0
+    assert wrong_owner_asset.rowcount == 0
+    assert db.execute("SELECT COUNT(*) FROM candidates").fetchone()[0] == 1

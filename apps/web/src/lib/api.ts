@@ -128,3 +128,25 @@ export async function deleteSourceAsset(assetId: string): Promise<void> {
     { method: "DELETE" },
   );
 }
+
+
+export interface MomentCandidateRecord {
+  id: string;
+  startSeconds: number;
+  endSeconds: number;
+  score: number;
+  acousticSalience: number;
+  transcriptVelocity: number;
+  narrativeArc: number;
+  novelty: number;
+  wordCount: number;
+  markerCount: number;
+  rationale: string;
+}
+
+export async function getJobMomentCandidates(jobId: string): Promise<MomentCandidateRecord[]> {
+  const result = await request<{ candidates: MomentCandidateRecord[] }>(
+    `/api/jobs/${encodeURIComponent(jobId)}/moments`,
+  );
+  return result.candidates ?? [];
+}

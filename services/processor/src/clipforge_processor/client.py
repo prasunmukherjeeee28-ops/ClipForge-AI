@@ -258,8 +258,9 @@ class ProcessorClient:
         transcript_segment_count: int,
         transcript_size_bytes: int,
         transcript_sha256: str,
+        candidates: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """Persist media and transcript metadata and complete this leased processing stage."""
+        """Persist media, transcript metadata, and owner-scoped moment candidates."""
         return await self.post(
             "/internal/processor/transcription-ready",
             {
@@ -281,6 +282,7 @@ class ProcessorClient:
                 "transcriptSegmentCount": transcript_segment_count,
                 "transcriptSizeBytes": transcript_size_bytes,
                 "transcriptSha256": transcript_sha256,
+                "candidates": candidates,
             },
         )
 
