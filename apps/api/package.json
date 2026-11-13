@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "npm run build:web && wrangler deploy",
+    "deploy": "node scripts/deploy-preflight.mjs && npm run build:web && wrangler deploy",
     "typecheck": "tsc --noEmit",
     "build:web": "npm --prefix ../web install && npm --prefix ../web run build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "verify:secrets": "node scripts/deploy-preflight.mjs --verify-secrets"
   },
   "dependencies": {
     "hono": "^4.10.4",

@@ -26,6 +26,9 @@ migrations_dir = "../../database/migrations"
 ACCESS_TEAM_DOMAIN = "YOUR_TEAM.cloudflareaccess.com"
 ACCESS_AUD = "SET_CLOUDFLARE_ACCESS_APPLICATION_AUD"
 ALLOWED_EMAILS = "first-user@example.com,second-user@example.com"
+B2_ENDPOINT = "https://s3.SET_B2_REGION.backblazeb2.com"
+B2_REGION = "SET_B2_REGION"
+B2_BUCKET = "clipforge-private-media"
 
 # Serve the Vite application and authenticated API from one protected origin.
 # Run npm run build:web (also part of npm run deploy) before deploying.
