@@ -48,8 +48,11 @@ These are ordinary modules/functions inside one analysis service. Scores are est
 4. The user attaches the ready asset to the matching job. The API checks job ownership, asset ownership, readiness and one-asset/one-job uniqueness before queuing it.
 5. Python polls the internal API and atomically claims only queued jobs with a ready, owner-matched asset.
 6. Processor parses the platform video/VOD ID and retrieves metadata only from the official YouTube Data API or Twitch Helix API.
-7. A VOD moves to `review` / `source_ready`; active/upcoming live sources are rejected for this VOD-only milestone. Metadata does not prove that the uploaded file matches the platform source or that the user has rights; the user is responsible for providing media they are authorized to process.
-8. Next, the processor must read the attached private R2 object and validate it with FFprobe before bounded audio extraction/transcription.
+7. Active/upcoming live sources are rejected for this VOD-only milestone. Metadata does not prove that the uploaded file matches the platform source or that the user has rights; the user is responsible for providing media they are authorized to process.
+8. The processor streams the attached private R2 object only under the current owner-matched job lease, then FFprobe validates the actual video/audio streams, duration and dimensions.
+9. FFmpeg extracts mono 16 kHz PCM WAV audio to a private persistent scratch volume partitioned by user UUID and job UUID; the temporary downloaded source is removed after successful extraction. D1 stores validated probe/audio metadata and the job transitions to `review` / `audio_extracted`.
+10. Transcription and AI modules evaluate candidate moments and suggest boundaries/titles; FFmpeg renders vertical clips and subtitles.
+11. Exports are stored in private R2; metadata/status are saved in D1, and the web app provides owner-authorized playback/download.
 9. AI modules evaluate candidates and suggest boundaries/titles; FFmpeg renders vertical clips and subtitles.
 10. Exports are stored in private R2; metadata/status are saved in D1, and the web app provides owner-authorized playback/download.
 
