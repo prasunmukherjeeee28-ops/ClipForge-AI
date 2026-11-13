@@ -242,7 +242,7 @@ def test_cancel_endpoint_is_scoped_to_owning_user() -> None:
 def test_job_list_query_is_scoped_to_authenticated_user() -> None:
     db = make_db()
     add_user_and_job(db, "user-2", "friend-job")
-    list_sql = api_sql_containing("transcript_sha256 AS transcriptSha256")
+    list_sql = api_sql_containing("SELECT id, source_url AS sourceUrl")
     rows = db.execute(list_sql, ("user-1", 100)).fetchall()
     assert {row["id"] for row in rows} == {"job-1"}
 
@@ -350,7 +350,7 @@ def test_completion_callback_cannot_override_cancellation() -> None:
 def test_job_detail_query_hides_another_users_job() -> None:
     db = make_db()
     add_user_and_job(db, "user-2", "friend-job")
-    detail_sql = api_sql_containing("SELECT id, source_url AS sourceUrl")
+    detail_sql = api_sql_containing("transcript_sha256 AS transcriptSha256")
     row = db.execute(detail_sql, ("friend-job", "user-1")).fetchone()
     assert row is None
 
