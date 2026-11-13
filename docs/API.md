@@ -24,7 +24,8 @@ Authenticated JSON API behind Cloudflare Access. Every user-facing resource quer
 - `PATCH /api/candidates/:candidateId` — mark an owned candidate `selected`, `rejected` or `pending`.
 - `POST /api/candidates/:candidateId/render` — queue an idempotent MP4 render for a selected candidate, with captions and `1080x1920` or `720x1280` output.
 - `GET /api/clips` — list the authenticated user's render jobs and ready clips.
-- `GET /api/clips/:clipId/download` — stream an owner's ready MP4 from private R2; non-ready or other-owner clips are not downloadable.
+- `GET /api/clips/:clipId/preview` — stream an owner's ready MP4 inline from private R2, supporting single byte-range requests for playback seeking.
+- `GET /api/clips/:clipId/download` — stream an owner's ready MP4 as an attachment; non-ready or other-owner clips are not downloadable.
 - `POST /api/clips/:clipId/cancel` — cancel an owned queued/rendering clip.
 - `POST /api/clips/:clipId/retry` — requeue an owned failed clip whose candidate remains selected.
 - `POST /api/jobs/:jobId/cancel` — cancel one owned queued job or a job still waiting for a source asset, or request cancellation of a processing job.
@@ -66,7 +67,7 @@ The Worker stores only SHA-256 of the lease token. A lease is valid only for its
 `review` / `awaiting_source_asset` → `queued` (ready asset attached) → `processing` (source verification, download, media validation, audio extraction, transcription and candidate analysis) → `review` / `moments_detected`. Candidate rows are private to the job owner. Selected candidates can be queued for rendering. A separate clip lease advances `queued` → `rendering` → `ready`; failures and cancellation are tracked per clip. Failures and cancellation transition to `failed` or `cancelled`. A processing job can expose stage `cancellation_requested` until the worker acknowledges cancellation or its lease expires.
 
 ## Infrastructure status
-Private R2 source and clip multipart upload flows, lease-bound processor source retrieval, FFprobe/FFmpeg processing, and owner-authorized MP4 download streaming are implemented in code. They have not been exercised against a live R2 bucket or a production processor host. A live R2/FFmpeg integration test, production processor setup, deployment configuration and dashboard/live-radar integration remain future work. No Cloudflare resources are created or deployed by the code changes.
+Private R2 source and clip multipart upload flows, lease-bound processor source retrieval, FFprobe/FFmpeg processing, owner-authorized MP4 preview (including byte ranges), and download streaming are implemented in code. They have not been exercised against a live R2 bucket or a production processor host. A live R2/FFmpeg integration test, production processor setup, deployment configuration and dashboard/live-radar integration remain future work. No Cloudflare resources are created or deployed by the code changes.
 
 ## Security rules
 - Resource IDs are not permissions; authorize every user-facing request by authenticated user ID.
