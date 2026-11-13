@@ -130,3 +130,23 @@ def test_nms_keeps_highest_scoring_overlapping_candidate_and_preserves_separate_
         candidate(100, 130, 0.7),
     ])
     assert [(item.start_seconds, item.end_seconds) for item in kept] == [(15, 45), (100, 130)]
+
+
+
+def test_candidate_windows_never_extend_past_fractional_audio_duration(tmp_path: Path) -> None:
+    audio = tmp_path / "fractional.wav"
+    transcript = tmp_path / "transcript.json"
+    sample_rate = 16000
+    samples = array("h", [0] * int(sample_rate * 15.5))
+    with wave.open(str(audio), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(sample_rate)
+        output.writeframes(samples.tobytes())
+    make_transcript(transcript, [
+        {"start": 1, "end": 3, "text": "Wait no way let's go"},
+        {"start": 8, "end": 10, "text": "That was absolutely insane"},
+    ])
+    candidates = detect_moments(audio, transcript, window_seconds=(10,), step_seconds=1, score_threshold=0)
+    assert candidates
+    assert all(item.end_seconds <= 15.5 for item in candidates)
