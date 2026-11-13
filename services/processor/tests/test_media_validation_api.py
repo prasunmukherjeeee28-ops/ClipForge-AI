@@ -311,7 +311,8 @@ def test_moment_candidate_insert_requires_current_owner_lease_and_transcript() -
     assert db.execute(insert, ("stale", "job-1", 12.0, 42.0, "excerpt", 90.0, "b" * 32, "reason", "{}", "stale-lease", "hash-1")).rowcount == 0
     assert db.execute(insert, ("wrong-hash", "job-1", 12.0, 42.0, "excerpt", 90.0, "b" * 32, "reason", "{}", "lease-1", "wrong-hash")).rowcount == 0
 
-    add_job(db, "job-no-transcript", "user-1", "asset-1")
+    add_asset(db, "asset-3", "user-1")
+    add_job(db, "job-no-transcript", "user-1", "asset-3")
     no_transcript = (
         "no-transcript", "job-no-transcript", 12.0, 42.0, "excerpt", 90.0,
         "b" * 32, "reason", "{}", "lease-1", "hash-1",
