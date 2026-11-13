@@ -12,6 +12,7 @@ class Settings:
     shared_secret: str
     worker_id: str
     http_timeout_seconds: float = 20.0
+    poll_interval_seconds: float = 10.0
     youtube_data_api_key: str | None = None
     twitch_client_id: str | None = None
     twitch_client_secret: str | None = None
@@ -102,6 +103,7 @@ class Settings:
             shared_secret=secret,
             worker_id=worker_id,
             http_timeout_seconds=timeout,
+            poll_interval_seconds=bounded_float("PROCESSOR_POLL_INTERVAL_SECONDS", 10.0, 1.0, 300.0),
             youtube_data_api_key=os.environ.get("YOUTUBE_DATA_API_KEY") or None,
             twitch_client_id=os.environ.get("TWITCH_CLIENT_ID") or None,
             twitch_client_secret=os.environ.get("TWITCH_CLIENT_SECRET") or None,
