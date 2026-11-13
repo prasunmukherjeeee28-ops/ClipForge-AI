@@ -284,6 +284,27 @@ class ProcessorClient:
             },
         )
 
+    async def report_moments_ready(
+        self,
+        job_id: str,
+        lease_id: str,
+        lease_token: str,
+        *,
+        candidates: list[dict[str, Any]],
+        generation_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist a bounded owner-scoped candidate batch and finish the analysis lease."""
+        return await self.post(
+            "/internal/processor/moments-ready",
+            {
+                "jobId": job_id,
+                "leaseId": lease_id,
+                "leaseToken": lease_token,
+                "generationId": generation_id or secrets.token_hex(16),
+                "candidates": candidates,
+            },
+        )
+
     async def mark_source_ready(self, job_id: str, lease_id: str, lease_token: str) -> dict[str, Any]:
         """Move a VOD with a ready owner-provided file into the source-ready review state."""
         return await self.post(
