@@ -34,6 +34,9 @@ def test_render_uses_safe_argument_array_and_preserves_full_frame(tmp_path: Path
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         captured["command"] = command
         captured["kwargs"] = kwargs
+        caption_file = Path(command[-1]).parent.glob("captions.srt")
+        caption_path = next(caption_file)
+        captured["captions"] = caption_path.read_text(encoding="utf-8")
         Path(command[-1]).write_bytes(b"x" * 2048)
         return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -51,6 +54,11 @@ def test_render_uses_safe_argument_array_and_preserves_full_frame(tmp_path: Path
     assert "boxblur" in filter_graph
     assert "overlay=" in filter_graph
     assert "subtitles=filename=" in filter_graph
+    captions = captured["captions"]
+    assert isinstance(captions, str)
+    assert "00:00:00,000 --> 00:00:02,000" in captions
+    assert "Wait, what just happened?" in captions
+    assert "Outside selected range" not in captions
     assert rendered.width == 1080 and rendered.height == 1920
     assert rendered.duration_seconds == 20
     assert output.is_file() and output.stat().st_size == 2048
