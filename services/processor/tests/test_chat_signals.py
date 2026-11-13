@@ -7,7 +7,7 @@ from clipforge_processor.chat_signals import ChatMessage, score_chat_reactions
 
 def make_burst(start: int, *, authors: int = 8, text: str = "NO WAY 😂") -> list[ChatMessage]:
     return [
-        ChatMessage(float(start + index % 8), f"viewer-{index % authors}", text)
+        ChatMessage(float(start + index % 8), f"viewer-{index % authors}", f"{text} {index}")
         for index in range(24)
     ]
 
