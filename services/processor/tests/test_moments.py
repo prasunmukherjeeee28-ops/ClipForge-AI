@@ -35,11 +35,12 @@ def make_transcript(path: Path, segments: list[dict[str, object]]) -> None:
 
 def test_extract_audio_seconds_reports_rms_and_zero_crossings(tmp_path: Path) -> None:
     audio = tmp_path / "audio.wav"
-    make_wav(audio, duration=3)
+    make_wav(audio, duration=3, loud_range=(1, 2))
     features = extract_audio_seconds(audio)
     assert len(features) == 3
     assert features[0].rms_dbfs < -100
-    assert features[1].rms_dbfs < -100
+    assert -12 < features[1].rms_dbfs < -5
+    assert features[1].zero_crossing_rate > 0.9
     assert features[2].rms_dbfs < -100
 
 
