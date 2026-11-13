@@ -27,8 +27,8 @@ const encodeSegment = (value: string) =>
   );
 const encodeKey = (key: string) => {
   const segments = key.split("/");
-  // The URL parser normalizes literal and percent-encoded dot segments.
-  // Reject them before constructing a URL so a key cannot target a sibling object.
+  // The URL parser normalizes dot segments when the URL is constructed.
+  // Reject them first so a key cannot silently target a different object.
   if (segments.some((segment) => segment === "." || segment === "..")) {
     throw new Error("Object keys must not contain dot path segments.");
   }
