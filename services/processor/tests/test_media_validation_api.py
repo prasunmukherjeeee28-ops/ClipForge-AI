@@ -232,6 +232,7 @@ def test_moment_candidates_are_persisted_only_for_the_active_owner_lease() -> No
     db = make_db()
     add_asset(db, "asset-1", "user-1")
     add_asset(db, "friend-asset", "user-2")
+    add_asset(db, "foreign-asset", "user-1")
     add_job(db, "job-1", "user-1", "asset-1")
     add_job(db, "friend-job", "user-2", "friend-asset")
     sql = moment_candidate_insert_sql()
@@ -263,7 +264,7 @@ def test_moment_candidates_are_persisted_only_for_the_active_owner_lease() -> No
     assert tuple(row) == (12.0, 42.0, 0.82, 0.9, "user-1")
 
     stale = db.execute(sql, ("job-1", "stale-lease", "hash-1", payload))
-    db.execute("UPDATE jobs SET source_asset_id = 'asset-1' WHERE id = 'friend-job'")
+    db.execute("UPDATE jobs SET source_asset_id = 'foreign-asset' WHERE id = 'friend-job'")
     wrong_owner_asset = db.execute(sql, ("friend-job", "lease-1", "hash-1", payload))
     assert stale.rowcount == 0
     assert wrong_owner_asset.rowcount == 0
