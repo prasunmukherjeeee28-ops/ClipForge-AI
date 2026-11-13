@@ -6,12 +6,12 @@ Cloudflare Worker API for the private two-account ClipForge workspace.
 
 - Cloudflare Access JWT verification, issuer/audience validation and an explicit two-email allowlist.
 - D1-backed user provisioning, job state, source metadata, upload parts, processor leases, candidates and clip records.
-- Owner-scoped multipart uploads of creator-authorized source files to private R2.
+- Owner-scoped multipart uploads of creator-authorized source files to private object storage.
 - Atomic processor job claiming from D1; D1 is the only dispatch source (no Cloudflare Queue).
 - HMAC-SHA256 authenticated processor endpoints with a five-minute timestamp window and one-use nonce.
-- Lease-checked source streaming from private R2 to the processor.
-- Lease-bound moment persistence, clip multipart upload, R2 object-size verification and D1 clip registration.
-- Owner-scoped clip listing, preview and download. R2 objects are not public.
+- Lease-checked source streaming from private object storage to the processor.
+- Lease-bound moment persistence, clip multipart upload, Backblaze B2 object storage object-size verification and D1 clip registration.
+- Owner-scoped clip listing, preview and download. Backblaze B2 object storage objects are not public.
 
 The API never downloads submitted YouTube/Twitch pages or extracts platform playback URLs. A URL is used for official metadata inspection only. The user must provide an original/export or other provider-approved media file they are authorized to process.
 
@@ -48,21 +48,21 @@ Processor routes cover authenticated ping, claim, heartbeat, progress, source me
 
 ## Two-account isolation
 
-Set `ALLOWED_EMAILS` to exactly the two intended Cloudflare Access email identities. Do not place the app behind an open sign-up flow. User-facing D1 reads and writes derive the user ID from the verified Access identity; clients never choose their own user ID. Source assets, jobs, candidates, clips and R2 object keys are owner-scoped.
+Set `ALLOWED_EMAILS` to exactly the two intended Cloudflare Access email identities. Do not place the app behind an open sign-up flow. User-facing D1 reads and writes derive the user ID from the verified Access identity; clients never choose their own user ID. Source assets, jobs, candidates, clips and Backblaze B2 object storage object keys are owner-scoped.
 
 ## Cloudflare configuration
 
 The Worker serves both the Vite frontend (`apps/web/dist`) and the Hono API from the same origin using Worker Static Assets. This keeps Cloudflare Access session handling same-origin; the API's public base URL can remain empty in the web build. `npm run deploy` in `apps/api` builds the frontend first, then deploys the Worker. Before deploying:
 
-1. Create or select the D1 database named `clipforge-db`, then confirm its ID matches `database_id` in the config.
-2. Enable R2 and create a private bucket named `clipforge-private-media` (do not enable public access or an `r2.dev` URL).
+1. Use the existing `clipforge-app-db` D1 database; its ID is configured in `wrangler.toml`.
+2. Enable Backblaze B2 object storage and create a private bucket named `clipforge-private-media` (do not enable public access or an `r2.dev` URL).
 3. Configure a Cloudflare Access application for the app/API and restrict it to the two intended users.
 4. Replace `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` and `ALLOWED_EMAILS` placeholders with the actual Access team domain, application audience and two email addresses.
 5. Set the Worker secret `PROCESSOR_SHARED_SECRET` to a random value of at least 32 characters. Supply the same value only to the private processor host.
-6. Apply the migrations in order: `wrangler d1 migrations apply clipforge-db --remote`.
+6. The nine migrations have already been applied to `clipforge-app-db`; verify the remote migration list before making schema changes.
 7. Run `npm install` and `npm run typecheck` in this directory. Set the two configured email identities and Access values without committing private addresses or secrets. Then run `npm run deploy` only after all bindings, secrets and Access settings are correct.
 
-Do not deploy with placeholder Access settings. Keep R2 private. Never put credentials in this file, `wrangler.toml`, GitHub source, frontend variables or a committed environment file.
+Do not deploy with placeholder Access settings. Keep Backblaze B2 object storage private. Never put credentials in this file, `wrangler.toml`, GitHub source, frontend variables or a committed environment file.
 
 ## Processor deployment
 
@@ -70,6 +70,6 @@ The separate Python processor has its own Docker image and single-instance Compo
 
 ## Current cloud setup status
 
-The repository code includes the complete VOD processing path, but code being present is not proof of a live service. The inspected Cloudflare account currently has a D1 database named `clipforge-db` with zero tables, R2 is not enabled, and the deployed Worker in the account is named `morrow-backend` rather than `clipforge-api`. The live Worker has not been replaced and no Cloudflare deployment has been performed as part of this repository work.
+The repository code includes the complete VOD processing path, but code being present is not proof of a live service. The inspected Cloudflare account currently has a D1 database named `clipforge-db` with zero tables, Backblaze B2 object storage is not enabled, and the deployed Worker in the account is named `morrow-backend` rather than `clipforge-api`. The live Worker has not been replaced and no Cloudflare deployment has been performed as part of this repository work.
 
-The app is not end-to-end operational until the D1 migrations are applied, private R2 is enabled and bound, Cloudflare Access is configured for the two accounts, the Worker is deployed, and the processor passes an authorized media job through to an owner-scoped clip download.
+The app is not end-to-end operational until the D1 migrations are applied, private object storage is enabled and bound, Cloudflare Access is configured for the two accounts, the Worker is deployed, and the processor passes an authorized media job through to an owner-scoped clip download.

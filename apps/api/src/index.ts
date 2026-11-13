@@ -1,9 +1,15 @@
 import { Hono, type Context } from "hono";
 import { createRemoteJWKSet, jwtVerify } from "jose";
+import { createBackblazeBucket } from "./storage/backblaze";
 
 type Bindings = {
   DB: D1Database;
-  MEDIA: R2Bucket;
+  MEDIA?: R2Bucket;
+  B2_ENDPOINT?: string;
+  B2_REGION?: string;
+  B2_BUCKET?: string;
+  B2_ACCESS_KEY_ID?: string;
+  B2_SECRET_ACCESS_KEY?: string;
   ACCESS_TEAM_DOMAIN: string;
   ACCESS_AUD: string;
   ALLOWED_EMAILS: string;
@@ -16,6 +22,30 @@ type Variables = {
 };
 
 type AppContext = Context<{ Bindings: Bindings; Variables: Variables }>;
+
+type ObjectStore = {
+  head(key: string): Promise<{ size: number; etag?: string | null } | null>;
+  get(key: string, options?: { range?: { offset: number; length: number } }): Promise<{ body: ReadableStream<Uint8Array>; size: number } | null>;
+  delete(key: string): Promise<unknown>;
+  createMultipartUpload(key: string, options?: { httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string> }): Promise<{
+    uploadId: string;
+    uploadPart(partNumber: number, body: BodyInit): Promise<{ etag: string }>;
+    complete(parts: Array<{ partNumber: number; etag: string }>): Promise<{ size: number }>;
+    abort(): Promise<void>;
+  }>;
+  resumeMultipartUpload(key: string, uploadId: string): {
+    uploadPart(partNumber: number, body: BodyInit): Promise<{ etag: string }>;
+    complete(parts: Array<{ partNumber: number; etag: string }>): Promise<{ size: number }>;
+    abort(): Promise<void>;
+  };
+};
+
+function storage(c: AppContext): ObjectStore {
+  const backblaze = createBackblazeBucket(c.env);
+  if (backblaze) return backblaze;
+  if (c.env.MEDIA) return c.env.MEDIA as unknown as ObjectStore;
+  throw new Error("Private object storage is not configured.");
+}
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 const uuid = () => crypto.randomUUID();
 const encoder = new TextEncoder();
@@ -252,7 +282,7 @@ app.post("/internal/processor/source-asset", async (c) => {
   }>();
   if (!asset) return jsonError(c, "No ready source asset is attached to this active lease.", 409);
 
-  const stored = await c.env.MEDIA.get(asset.objectKey);
+  const stored = await storage(c).get(asset.objectKey);
   if (!stored) return jsonError(c, "The private source object is missing.", 409);
   if (stored.size !== asset.sizeBytes) {
     return jsonError(c, "Stored source size does not match its verified upload record.", 409);
@@ -436,7 +466,7 @@ app.post("/internal/processor/clip-uploads", async (c) => {
   }>();
 
   if (existing?.status === "stored" && existing.expectedSizeBytes === body.sizeBytes) {
-    const stored = await c.env.MEDIA.head(existing.objectKey);
+    const stored = await storage(c).head(existing.objectKey);
     if (stored && stored.size === existing.expectedSizeBytes) {
       await c.env.DB.prepare(
         "UPDATE clip_uploads SET lease_id = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2 AND job_id = ?3 AND status = 'stored'",
@@ -456,9 +486,9 @@ app.post("/internal/processor/clip-uploads", async (c) => {
   const clipId = existing?.id ?? uuid();
   const objectKey = existing?.objectKey ?? `clips/${candidate.userId}/${body.jobId}/${clipId}.mp4`;
   if (existing?.uploadId) {
-    await c.env.MEDIA.resumeMultipartUpload(objectKey, existing.uploadId).abort().catch(() => undefined);
+    await storage(c).resumeMultipartUpload(objectKey, existing.uploadId).abort().catch(() => undefined);
   }
-  const object = await c.env.MEDIA.head(objectKey);
+  const object = await storage(c).head(objectKey);
   if (object && object.size === body.sizeBytes) {
     await c.env.DB.prepare(
       "UPDATE clip_uploads SET expected_size_bytes = ?1, part_count = ?2, title = ?3, duration_seconds = ?4, status = 'stored', upload_id = NULL, lease_id = ?5, updated_at = CURRENT_TIMESTAMP WHERE id = ?6 AND job_id = ?7",
@@ -468,7 +498,7 @@ app.post("/internal/processor/clip-uploads", async (c) => {
       partCount: Math.ceil(body.sizeBytes! / CLIP_UPLOAD_PART_BYTES), stored: true });
   }
 
-  const multipart = await c.env.MEDIA.createMultipartUpload(objectKey, {
+  const multipart = await storage(c).createMultipartUpload(objectKey, {
     httpMetadata: { contentType: "video/mp4" },
     customMetadata: { clipId, jobId: body.jobId, userId: candidate.userId },
   });
@@ -520,7 +550,7 @@ app.post("/internal/processor/clip-uploads/:clipId/parts/:partNumber", async (c)
   ).bind(clipId, partNumber, expectedBytes).run();
   if (!reservation.meta.changes) return jsonError(c, "This clip part is already stored or currently uploading.", 409);
   try {
-    const uploaded = await c.env.MEDIA.resumeMultipartUpload(upload.objectKey, upload.uploadId)
+    const uploaded = await storage(c).resumeMultipartUpload(upload.objectKey, upload.uploadId)
       .uploadPart(partNumber, bytes);
     const saved = await c.env.DB.prepare(
       "UPDATE clip_upload_parts SET etag = ?1, status = 'uploaded', updated_at = CURRENT_TIMESTAMP WHERE clip_id = ?2 AND part_number = ?3 AND status = 'uploading'",
@@ -544,7 +574,7 @@ app.post("/internal/processor/clip-uploads/:clipId/complete", async (c) => {
   ).bind(clipId, body.jobId, body.leaseId, tokenHash)
     .first<{ objectKey: string; uploadId: string | null; expectedSizeBytes: number; partCount: number; status: string }>();
   if (!upload) return jsonError(c, "Clip upload lease is invalid or expired.", 409);
-  const existingObject = await c.env.MEDIA.head(upload.objectKey);
+  const existingObject = await storage(c).head(upload.objectKey);
   if (existingObject) {
     if (existingObject.size !== upload.expectedSizeBytes) return jsonError(c, "Stored clip size does not match its verified size.", 409);
     await c.env.DB.prepare("UPDATE clip_uploads SET status = 'stored', upload_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND job_id = ?2 AND lease_id = ?3")
@@ -560,15 +590,15 @@ app.post("/internal/processor/clip-uploads/:clipId/complete", async (c) => {
     return jsonError(c, "Clip upload is missing one or more verified parts.", 409);
   }
   try {
-    await c.env.MEDIA.resumeMultipartUpload(upload.objectKey, upload.uploadId)
+    await storage(c).resumeMultipartUpload(upload.objectKey, upload.uploadId)
       .complete(parts.results.map((part) => ({ partNumber: part.partNumber, etag: part.etag })));
   } catch {
-    const recovered = await c.env.MEDIA.head(upload.objectKey);
+    const recovered = await storage(c).head(upload.objectKey);
     if (!recovered || recovered.size !== upload.expectedSizeBytes) {
       return jsonError(c, "R2 could not finalize the clip upload. Retry completion.", 409);
     }
   }
-  const stored = await c.env.MEDIA.head(upload.objectKey);
+  const stored = await storage(c).head(upload.objectKey);
   if (!stored || stored.size !== upload.expectedSizeBytes) return jsonError(c, "Stored clip failed size verification.", 409);
   const saved = await c.env.DB.prepare(
     "UPDATE clip_uploads SET status = 'stored', upload_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND job_id = ?2 AND lease_id = ?3 AND status = 'uploading'",
@@ -757,9 +787,9 @@ app.post("/api/source-assets", async (c) => {
   const user = c.get("user");
   const assetId = uuid();
   const objectKey = `source-assets/${user.id}/${assetId}/source`;
-  let multipart: R2MultipartUpload;
+  let multipart: Awaited<ReturnType<ObjectStore["createMultipartUpload"]>>;
   try {
-    multipart = await c.env.MEDIA.createMultipartUpload(objectKey, {
+    multipart = await storage(c).createMultipartUpload(objectKey, {
       httpMetadata: { contentType },
       customMetadata: { assetId, userId: user.id },
     });
@@ -844,7 +874,7 @@ app.put("/api/source-assets/:assetId/parts/:partNumber", async (c) => {
   }
 
   try {
-    const uploaded = await c.env.MEDIA.resumeMultipartUpload(asset.objectKey, asset.uploadId)
+    const uploaded = await storage(c).resumeMultipartUpload(asset.objectKey, asset.uploadId)
       .uploadPart(partNumber, c.req.raw.body);
     const saved = await c.env.DB.prepare(
       "UPDATE source_asset_parts SET status = 'uploaded', etag = ?1, updated_at = CURRENT_TIMESTAMP WHERE asset_id = ?2 AND part_number = ?3 AND status = 'uploading'",
@@ -869,10 +899,10 @@ app.post("/api/source-assets/:assetId/complete", async (c) => {
 
   if (asset.status === "finalizing") {
     // Recover a request that completed R2 but failed before it could update D1.
-    const existingObject = await c.env.MEDIA.head(asset.objectKey);
+    const existingObject = await storage(c).head(asset.objectKey);
     if (existingObject) {
       if (existingObject.size !== asset.sizeBytes) {
-        await c.env.MEDIA.delete(asset.objectKey);
+        await storage(c).delete(asset.objectKey);
         await c.env.DB.prepare(
           "UPDATE source_assets SET status = 'failed', upload_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND user_id = ?2 AND status = 'finalizing'",
         ).bind(assetId, c.get("user").id).run();
@@ -913,14 +943,14 @@ app.post("/api/source-assets/:assetId/complete", async (c) => {
     return jsonError(c, "An upload part is still in progress or this asset is no longer finalizable.", 409);
   }
 
-  let storedObject: R2Object;
+  let storedObject: { size: number };
   try {
-    storedObject = await c.env.MEDIA.resumeMultipartUpload(asset.objectKey, asset.uploadId)
+    storedObject = await storage(c).resumeMultipartUpload(asset.objectKey, asset.uploadId)
       .complete(parts.results.map((part) => ({ partNumber: part.partNumber, etag: part.etag })));
   } catch {
     // A network failure can happen after R2 finalized the object. Detect that
     // case before reopening the multipart upload for a safe client retry.
-    const existingObject = await c.env.MEDIA.head(asset.objectKey);
+    const existingObject = await storage(c).head(asset.objectKey);
     if (existingObject) {
       storedObject = existingObject;
     } else {
@@ -931,7 +961,7 @@ app.post("/api/source-assets/:assetId/complete", async (c) => {
     }
   }
   if (storedObject.size !== asset.sizeBytes) {
-    await c.env.MEDIA.delete(asset.objectKey);
+    await storage(c).delete(asset.objectKey);
     await c.env.DB.prepare(
       "UPDATE source_assets SET status = 'failed', upload_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND user_id = ?2 AND status = 'finalizing'",
     ).bind(assetId, c.get("user").id).run();
@@ -965,16 +995,16 @@ app.delete("/api/source-assets/:assetId", async (c) => {
   try {
     if (asset.uploadId) {
       try {
-        await c.env.MEDIA.resumeMultipartUpload(asset.objectKey, asset.uploadId).abort();
+        await storage(c).resumeMultipartUpload(asset.objectKey, asset.uploadId).abort();
       } catch {
         // If an earlier retry already aborted it, no completed object exists.
-        const existingObject = await c.env.MEDIA.head(asset.objectKey);
+        const existingObject = await storage(c).head(asset.objectKey);
         if (existingObject) throw new Error("Multipart upload cleanup is incomplete.");
       }
     } else {
       // R2 delete is safe to repeat if a previous cleanup succeeded but the
       // D1 row deletion failed.
-      await c.env.MEDIA.delete(asset.objectKey);
+      await storage(c).delete(asset.objectKey);
     }
   } catch {
     return jsonError(c, "Source storage could not be cleaned up. Retry deletion later.", 409);
@@ -1128,12 +1158,12 @@ app.get("/api/clips/:clipId/preview", async (c) => {
   ).bind(c.req.param("clipId"), c.get("user").id).first<{ outputKey: string }>();
   if (!clip) return jsonError(c, "Clip not found.", 404);
 
-  const metadata = await c.env.MEDIA.head(clip.outputKey);
+  const metadata = await storage(c).head(clip.outputKey);
   if (!metadata) return jsonError(c, "Clip file is unavailable.", 404);
 
   const rangeHeader = c.req.header("Range");
   if (!rangeHeader) {
-    const object = await c.env.MEDIA.get(clip.outputKey);
+    const object = await storage(c).get(clip.outputKey);
     if (!object) return jsonError(c, "Clip file is unavailable.", 404);
     return new Response(object.body, {
       headers: {
@@ -1165,7 +1195,7 @@ app.get("/api/clips/:clipId/preview", async (c) => {
     });
   }
 
-  const object = await c.env.MEDIA.get(clip.outputKey, { range: { offset: start, length: end - start + 1 } });
+  const object = await storage(c).get(clip.outputKey, { range: { offset: start, length: end - start + 1 } });
   if (!object) return jsonError(c, "Clip file is unavailable.", 404);
   return new Response(object.body, {
     status: 206,
@@ -1186,7 +1216,7 @@ app.get("/api/clips/:clipId/download", async (c) => {
     "SELECT output_key AS outputKey, title FROM clips WHERE id = ?1 AND user_id = ?2",
   ).bind(c.req.param("clipId"), c.get("user").id).first<{ outputKey: string; title: string }>();
   if (!clip) return jsonError(c, "Clip not found.", 404);
-  const object = await c.env.MEDIA.get(clip.outputKey);
+  const object = await storage(c).get(clip.outputKey);
   if (!object) return jsonError(c, "Clip file is unavailable.", 404);
   const filename = clip.title.normalize("NFKC").replace(/[^a-zA-Z0-9 _-]/g, "").trim().slice(0, 80) || "clip";
   return new Response(object.body, {
