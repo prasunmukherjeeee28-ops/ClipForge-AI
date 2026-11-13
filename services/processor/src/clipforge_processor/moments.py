@@ -5,6 +5,8 @@ import math
 import re
 import statistics
 import wave
+
+import numpy as np
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -101,18 +103,11 @@ def extract_audio_seconds(
                 sample_count = len(raw) // 2
                 if sample_count == 0:
                     break
-                square_sum = 0.0
-                crossings = 0
-                previous = 0
-                for offset in range(0, sample_count * 2, 2):
-                    sample = int.from_bytes(raw[offset:offset + 2], "little", signed=True)
-                    square_sum += float(sample * sample)
-                    if offset and ((sample < 0 <= previous) or (sample >= 0 > previous)):
-                        crossings += 1
-                    previous = sample
-                rms = math.sqrt(square_sum / sample_count) / 32768.0
+                samples = np.frombuffer(raw, dtype="<i2")
+                floating = samples.astype(np.float32, copy=False)
+                rms = float(np.sqrt(np.mean(floating * floating, dtype=np.float64))) / 32768.0
                 dbfs = 20.0 * math.log10(max(rms, 1e-8))
-                zcr = crossings / max(1, sample_count - 1)
+                zcr = float(np.count_nonzero(np.signbit(samples[1:]) != np.signbit(samples[:-1]))) / max(1, sample_count - 1)
                 output.append(AudioSecond(second, dbfs, zcr))
                 second += 1
             return output
@@ -247,7 +242,7 @@ def detect_moments(
     marker_by_second = [0.0] * duration
     speech_by_second = [0.0] * duration
     all_markers: Counter[str] = Counter()
-    marker_events: list[tuple[float, str]] = []
+    marker_events: list[tuple[float, str, int]] = []
     for segment in segments:
         text = segment["text"]
         words = segment["words"]
@@ -270,11 +265,16 @@ def detect_moments(
                 midpoint = (segment["start"] + segment["end"]) / 2
                 second = min(duration - 1, max(0, int(midpoint)))
                 marker_by_second[second] += count
-                marker_events.append((midpoint, marker))
+                marker_events.append((midpoint, marker, count))
 
     words_prefix = _prefix(words_by_second)
     marker_prefix = _prefix(marker_by_second)
     speech_prefix = _prefix(speech_by_second)
+    novelty_by_second = [0.0] * duration
+    for timestamp, marker, count in marker_events:
+        second = min(duration - 1, max(0, int(timestamp)))
+        novelty_by_second[second] += count / math.sqrt(1.0 + all_markers[marker])
+    novelty_prefix = _prefix(novelty_by_second)
     energy = [item.rms_dbfs for item in audio]
     energy_baseline = statistics.median(energy)
     energy_mad = statistics.median(abs(value - energy_baseline) for value in energy) or 1.0
@@ -314,7 +314,7 @@ def detect_moments(
             narrative = 0.65 * coverage + 0.35 * peak_alignment
 
             if marker_count:
-                rarity = sum(1.0 / math.sqrt(1.0 + all_markers[marker]) for _, marker in marker_events if start <= _ <= end)
+                rarity = _range_sum(novelty_prefix, start, end)
                 novelty = min(1.0, rarity / max(1.0, marker_count))
             else:
                 novelty = 0.0
