@@ -22,6 +22,9 @@ const encoder = new TextEncoder();
 const SOURCE_ASSET_PART_BYTES = 8 * 1024 * 1024;
 const MAX_SOURCE_ASSET_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_SOURCE_ASSET_USER_BYTES = 8 * 1024 * 1024 * 1024;
+const CLIP_UPLOAD_PART_BYTES = 8 * 1024 * 1024;
+const MAX_CLIP_BYTES = 500 * 1024 * 1024;
+const MAX_CLIP_USER_BYTES = 4 * 1024 * 1024 * 1024;
 const SOURCE_ASSET_EXTENSIONS: Record<string, readonly string[]> = {
   "video/mp4": [".mp4", ".m4v"],
   "video/quicktime": [".mov"],
@@ -32,6 +35,11 @@ const SOURCE_ASSET_EXTENSIONS: Record<string, readonly string[]> = {
 function expectedSourcePartSize(totalBytes: number, partNumber: number): number {
   const offset = (partNumber - 1) * SOURCE_ASSET_PART_BYTES;
   return Math.min(SOURCE_ASSET_PART_BYTES, totalBytes - offset);
+}
+
+function expectedClipPartSize(totalBytes: number, partNumber: number): number {
+  const offset = (partNumber - 1) * CLIP_UPLOAD_PART_BYTES;
+  return Math.min(CLIP_UPLOAD_PART_BYTES, totalBytes - offset);
 }
 
 function safeSourceFilename(value: unknown, contentType: string): string | null {
@@ -380,7 +388,7 @@ app.post("/internal/processor/transcription-ready", async (c) => {
          AND EXISTS (SELECT 1 FROM source_assets WHERE source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id AND source_assets.status = 'ready')`,
     ).bind(body.jobId, body.leaseId, tokenHash, JSON.stringify(candidates)),
     c.env.DB.prepare(
-      "UPDATE jobs SET media_container = ?1, media_video_codec = ?2, media_source_audio_codec = ?3, media_width = ?4, media_height = ?5, media_duration_seconds = ?6, audio_codec = ?7, audio_sample_rate = ?8, audio_channels = ?9, audio_size_bytes = ?10, media_verified_at = CURRENT_TIMESTAMP, transcript_model = ?11, transcript_language = ?12, transcript_segment_count = ?13, transcript_size_bytes = ?14, transcript_sha256 = ?15, transcript_verified_at = CURRENT_TIMESTAMP, status = 'review', stage = 'moments_ready', progress = 70, error_code = NULL, lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?16 AND lease_id = ?17 AND lease_token_hash = ?18 AND status = 'processing' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP AND source_type = 'video' AND source_asset_id IS NOT NULL AND EXISTS (SELECT 1 FROM source_assets WHERE source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id AND source_assets.status = 'ready') RETURNING status",
+      "UPDATE jobs SET media_container = ?1, media_video_codec = ?2, media_source_audio_codec = ?3, media_width = ?4, media_height = ?5, media_duration_seconds = ?6, audio_codec = ?7, audio_sample_rate = ?8, audio_channels = ?9, audio_size_bytes = ?10, media_verified_at = CURRENT_TIMESTAMP, transcript_model = ?11, transcript_language = ?12, transcript_segment_count = ?13, transcript_size_bytes = ?14, transcript_sha256 = ?15, transcript_verified_at = CURRENT_TIMESTAMP, status = 'processing', stage = 'rendering_clips', progress = 72, error_code = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?16 AND lease_id = ?17 AND lease_token_hash = ?18 AND status = 'processing' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP AND source_type = 'video' AND source_asset_id IS NOT NULL AND EXISTS (SELECT 1 FROM source_assets WHERE source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id AND source_assets.status = 'ready') RETURNING status",
     ).bind(
       body.container, body.videoCodec, body.sourceAudioCodec, body.width, body.height,
       body.durationSeconds, body.audioCodec, body.audioSampleRate, body.audioChannels,
@@ -392,6 +400,204 @@ app.post("/internal/processor/transcription-ready", async (c) => {
   const completed = results[results.length - 1]?.meta.changes ?? 0;
   if (!completed) return jsonError(c, "Lease is invalid, expired, cancelled, or no ready owner-matched source asset is attached.", 409);
   return c.json({ ok: true, mediaReady: true, transcriptionReady: true, momentsReady: true, candidateCount: candidates!.length, stage: "moments_ready" });
+});
+
+
+app.post("/internal/processor/clip-uploads", async (c) => {
+  const body = parseProcessorBody<{
+    jobId?: string; leaseId?: string; leaseToken?: string;
+    startSeconds?: number; endSeconds?: number; title?: string; sizeBytes?: number;
+  }>(c);
+  if (!body?.jobId || !body.leaseId || !body.leaseToken ||
+      typeof body.startSeconds !== "number" || !Number.isFinite(body.startSeconds) ||
+      typeof body.endSeconds !== "number" || !Number.isFinite(body.endSeconds) ||
+      body.startSeconds < 0 || body.endSeconds - body.startSeconds < 5 ||
+      body.endSeconds - body.startSeconds > 120 ||
+      typeof body.title !== "string" || !body.title.trim() || body.title.length > 120 ||
+      !Number.isSafeInteger(body.sizeBytes) || body.sizeBytes! < 1024 || body.sizeBytes! > MAX_CLIP_BYTES) {
+    return jsonError(c, "Invalid clip upload initialization payload.", 400);
+  }
+
+  const tokenHash = await sha256Hex(body.leaseToken);
+  const candidate = await c.env.DB.prepare(
+    "SELECT jobs.user_id AS userId, candidates.id AS candidateId FROM jobs JOIN candidates ON candidates.job_id = jobs.id WHERE jobs.id = ?1 AND jobs.lease_id = ?2 AND jobs.lease_token_hash = ?3 AND jobs.status = 'processing' AND jobs.stage = 'rendering_clips' AND jobs.cancel_requested = 0 AND jobs.lease_expires_at > CURRENT_TIMESTAMP AND abs(candidates.start_seconds - ?4) < 0.01 AND abs(candidates.end_seconds - ?5) < 0.01",
+  ).bind(body.jobId, body.leaseId, tokenHash, body.startSeconds, body.endSeconds)
+    .first<{ userId: string; candidateId: string }>();
+  if (!candidate) return jsonError(c, "The lease or selected candidate is no longer valid.", 409);
+
+  const existing = await c.env.DB.prepare(
+    "SELECT id, object_key AS objectKey, upload_id AS uploadId, expected_size_bytes AS expectedSizeBytes, status, lease_id AS leaseId FROM clip_uploads WHERE job_id = ?1 AND candidate_id = ?2",
+  ).bind(body.jobId, candidate.candidateId).first<{
+    id: string; objectKey: string; uploadId: string | null; expectedSizeBytes: number;
+    status: "uploading" | "stored" | "failed"; leaseId: string;
+  }>();
+
+  if (existing?.status === "stored") {
+    const stored = await c.env.MEDIA.head(existing.objectKey);
+    if (stored && stored.size === existing.expectedSizeBytes) {
+      return c.json({ clipUploadId: existing.id, partSizeBytes: CLIP_UPLOAD_PART_BYTES,
+        partCount: Math.ceil(stored.size / CLIP_UPLOAD_PART_BYTES), stored: true });
+    }
+  }
+
+  const used = await c.env.DB.prepare(
+    "SELECT COALESCE((SELECT SUM(size_bytes) FROM clips WHERE user_id = ?1), 0) + COALESCE((SELECT SUM(expected_size_bytes) FROM clip_uploads WHERE user_id = ?1 AND status = 'uploading' AND id != COALESCE(?2, '')), 0) AS usedBytes",
+  ).bind(candidate.userId, existing?.id ?? null).first<{ usedBytes: number }>();
+  if ((used?.usedBytes ?? 0) + body.sizeBytes! > MAX_CLIP_USER_BYTES) {
+    return jsonError(c, "Private clip storage quota would be exceeded.", 409);
+  }
+
+  const clipId = existing?.id ?? uuid();
+  const objectKey = existing?.objectKey ?? \`clips/\${candidate.userId}/\${body.jobId}/\${clipId}.mp4\`;
+  if (existing?.uploadId) {
+    await c.env.MEDIA.resumeMultipartUpload(objectKey, existing.uploadId).abort().catch(() => undefined);
+  }
+  const object = await c.env.MEDIA.head(objectKey);
+  if (object && object.size === body.sizeBytes) {
+    await c.env.DB.prepare(
+      "UPDATE clip_uploads SET expected_size_bytes = ?1, part_count = ?2, title = ?3, duration_seconds = ?4, status = 'stored', upload_id = NULL, lease_id = ?5, updated_at = CURRENT_TIMESTAMP WHERE id = ?6 AND job_id = ?7",
+    ).bind(body.sizeBytes, Math.ceil(body.sizeBytes! / CLIP_UPLOAD_PART_BYTES), body.title.trim(),
+      body.endSeconds - body.startSeconds, body.leaseId, clipId, body.jobId).run();
+    return c.json({ clipUploadId: clipId, partSizeBytes: CLIP_UPLOAD_PART_BYTES,
+      partCount: Math.ceil(body.sizeBytes! / CLIP_UPLOAD_PART_BYTES), stored: true });
+  }
+
+  const multipart = await c.env.MEDIA.createMultipartUpload(objectKey, {
+    httpMetadata: { contentType: "video/mp4" },
+    customMetadata: { clipId, jobId: body.jobId, userId: candidate.userId },
+  });
+  const partCount = Math.ceil(body.sizeBytes! / CLIP_UPLOAD_PART_BYTES);
+  if (existing) {
+    await c.env.DB.batch([
+      c.env.DB.prepare("DELETE FROM clip_upload_parts WHERE clip_id = ?1").bind(clipId),
+      c.env.DB.prepare(
+        "UPDATE clip_uploads SET upload_id = ?1, lease_id = ?2, expected_size_bytes = ?3, part_count = ?4, title = ?5, duration_seconds = ?6, status = 'uploading', updated_at = CURRENT_TIMESTAMP WHERE id = ?7 AND job_id = ?8",
+      ).bind(multipart.uploadId, body.leaseId, body.sizeBytes, partCount, body.title.trim(),
+        body.endSeconds - body.startSeconds, clipId, body.jobId),
+    ]);
+  } else {
+    await c.env.DB.prepare(
+      "INSERT INTO clip_uploads (id, job_id, user_id, candidate_id, object_key, upload_id, lease_id, expected_size_bytes, part_count, title, duration_seconds, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'uploading')",
+    ).bind(clipId, body.jobId, candidate.userId, candidate.candidateId, objectKey, multipart.uploadId,
+      body.leaseId, body.sizeBytes, partCount, body.title.trim(), body.endSeconds - body.startSeconds).run();
+  }
+  return c.json({ clipUploadId: clipId, partSizeBytes: CLIP_UPLOAD_PART_BYTES, partCount, stored: false }, 201);
+});
+
+app.post("/internal/processor/clip-uploads/:clipId/parts/:partNumber", async (c) => {
+  const body = parseProcessorBody<{ jobId?: string; leaseId?: string; leaseToken?: string; data?: string }>(c);
+  const clipId = c.req.param("clipId");
+  const partNumber = Number(c.req.param("partNumber"));
+  if (!body?.jobId || !body.leaseId || !body.leaseToken ||
+      !Number.isSafeInteger(partNumber) || partNumber < 1 ||
+      typeof body.data !== "string" || body.data.length > 12_000_000 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(body.data)) {
+    return jsonError(c, "Invalid clip upload part.", 400);
+  }
+  const tokenHash = await sha256Hex(body.leaseToken);
+  const upload = await c.env.DB.prepare(
+    "SELECT clip_uploads.object_key AS objectKey, clip_uploads.upload_id AS uploadId, clip_uploads.expected_size_bytes AS expectedSizeBytes, clip_uploads.part_count AS partCount FROM clip_uploads JOIN jobs ON jobs.id = clip_uploads.job_id WHERE clip_uploads.id = ?1 AND clip_uploads.job_id = ?2 AND clip_uploads.lease_id = ?3 AND clip_uploads.status = 'uploading' AND jobs.lease_id = ?3 AND jobs.lease_token_hash = ?4 AND jobs.status = 'processing' AND jobs.stage = 'rendering_clips' AND jobs.cancel_requested = 0 AND jobs.lease_expires_at > CURRENT_TIMESTAMP",
+  ).bind(clipId, body.jobId, body.leaseId, tokenHash)
+    .first<{ objectKey: string; uploadId: string; expectedSizeBytes: number; partCount: number }>();
+  if (!upload || partNumber > upload.partCount) return jsonError(c, "Clip upload lease is invalid or expired.", 409);
+  let bytes: Uint8Array;
+  try { bytes = Uint8Array.from(atob(body.data), (character) => character.charCodeAt(0)); }
+  catch { return jsonError(c, "Clip upload part encoding is invalid.", 400); }
+  const expectedBytes = expectedClipPartSize(upload.expectedSizeBytes, partNumber);
+  if (bytes.byteLength !== expectedBytes) return jsonError(c, "Clip upload part size is invalid.", 400);
+
+  const reservation = await c.env.DB.prepare(
+    "INSERT INTO clip_upload_parts (clip_id, part_number, size_bytes, status) VALUES (?1, ?2, ?3, 'uploading') ON CONFLICT(clip_id, part_number) DO NOTHING",
+  ).bind(clipId, partNumber, expectedBytes).run();
+  if (!reservation.meta.changes) return jsonError(c, "This clip part is already stored or currently uploading.", 409);
+  try {
+    const uploaded = await c.env.MEDIA.resumeMultipartUpload(upload.objectKey, upload.uploadId)
+      .uploadPart(partNumber, bytes);
+    const saved = await c.env.DB.prepare(
+      "UPDATE clip_upload_parts SET etag = ?1, status = 'uploaded', updated_at = CURRENT_TIMESTAMP WHERE clip_id = ?2 AND part_number = ?3 AND status = 'uploading'",
+    ).bind(uploaded.etag, clipId, partNumber).run();
+    if (!saved.meta.changes) return jsonError(c, "Clip part state changed during upload.", 409);
+  } catch {
+    await c.env.DB.prepare("DELETE FROM clip_upload_parts WHERE clip_id = ?1 AND part_number = ?2 AND status = 'uploading'")
+      .bind(clipId, partNumber).run();
+    return jsonError(c, "Clip upload part could not be stored; retry the part.", 409);
+  }
+  return c.json({ clipUploadId: clipId, partNumber, uploaded: true }, 201);
+});
+
+app.post("/internal/processor/clip-uploads/:clipId/complete", async (c) => {
+  const body = parseProcessorBody<{ jobId?: string; leaseId?: string; leaseToken?: string }>(c);
+  const clipId = c.req.param("clipId");
+  if (!body?.jobId || !body.leaseId || !body.leaseToken) return jsonError(c, "Invalid clip completion payload.", 400);
+  const tokenHash = await sha256Hex(body.leaseToken);
+  const upload = await c.env.DB.prepare(
+    "SELECT object_key AS objectKey, upload_id AS uploadId, expected_size_bytes AS expectedSizeBytes, part_count AS partCount, status FROM clip_uploads WHERE id = ?1 AND job_id = ?2 AND lease_id = ?3 AND EXISTS (SELECT 1 FROM jobs WHERE jobs.id = clip_uploads.job_id AND jobs.lease_id = ?3 AND jobs.lease_token_hash = ?4 AND jobs.status = 'processing' AND jobs.stage = 'rendering_clips' AND jobs.cancel_requested = 0 AND jobs.lease_expires_at > CURRENT_TIMESTAMP)",
+  ).bind(clipId, body.jobId, body.leaseId, tokenHash)
+    .first<{ objectKey: string; uploadId: string | null; expectedSizeBytes: number; partCount: number; status: string }>();
+  if (!upload) return jsonError(c, "Clip upload lease is invalid or expired.", 409);
+  const existingObject = await c.env.MEDIA.head(upload.objectKey);
+  if (existingObject) {
+    if (existingObject.size !== upload.expectedSizeBytes) return jsonError(c, "Stored clip size does not match its verified size.", 409);
+    await c.env.DB.prepare("UPDATE clip_uploads SET status = 'stored', upload_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND job_id = ?2 AND lease_id = ?3")
+      .bind(clipId, body.jobId, body.leaseId).run();
+    return c.json({ clipUploadId: clipId, stored: true, sizeBytes: existingObject.size });
+  }
+  if (upload.status !== "uploading" || !upload.uploadId) return jsonError(c, "Clip upload is not ready to finalize.", 409);
+  const parts = await c.env.DB.prepare(
+    "SELECT part_number AS partNumber, etag, size_bytes AS sizeBytes FROM clip_upload_parts WHERE clip_id = ?1 AND status = 'uploaded' ORDER BY part_number",
+  ).bind(clipId).all<{ partNumber: number; etag: string; sizeBytes: number }>();
+  if (parts.results.length !== upload.partCount || parts.results.some((part, index) =>
+    part.partNumber !== index + 1 || part.sizeBytes !== expectedClipPartSize(upload.expectedSizeBytes, index + 1) || !part.etag)) {
+    return jsonError(c, "Clip upload is missing one or more verified parts.", 409);
+  }
+  try {
+    await c.env.MEDIA.resumeMultipartUpload(upload.objectKey, upload.uploadId)
+      .complete(parts.results.map((part) => ({ partNumber: part.partNumber, etag: part.etag })));
+  } catch {
+    const recovered = await c.env.MEDIA.head(upload.objectKey);
+    if (!recovered || recovered.size !== upload.expectedSizeBytes) {
+      return jsonError(c, "R2 could not finalize the clip upload. Retry completion.", 409);
+    }
+  }
+  const stored = await c.env.MEDIA.head(upload.objectKey);
+  if (!stored || stored.size !== upload.expectedSizeBytes) return jsonError(c, "Stored clip failed size verification.", 409);
+  const saved = await c.env.DB.prepare(
+    "UPDATE clip_uploads SET status = 'stored', upload_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND job_id = ?2 AND lease_id = ?3 AND status = 'uploading'",
+  ).bind(clipId, body.jobId, body.leaseId).run();
+  if (!saved.meta.changes) return jsonError(c, "Clip upload state changed during finalization.", 409);
+  return c.json({ clipUploadId: clipId, stored: true, sizeBytes: stored.size });
+});
+
+app.post("/internal/processor/clips-ready", async (c) => {
+  const body = parseProcessorBody<{ jobId?: string; leaseId?: string; leaseToken?: string; clipIds?: string[] }>(c);
+  if (!body?.jobId || !body.leaseId || !body.leaseToken ||
+      !Array.isArray(body.clipIds) || body.clipIds.length > 3 ||
+      body.clipIds.some((id) => typeof id !== "string" || !/^[a-f0-9-]{36}$/i.test(id)) ||
+      new Set(body.clipIds).size !== body.clipIds.length) {
+    return jsonError(c, "Invalid completed-clips payload.", 400);
+  }
+  const tokenHash = await sha256Hex(body.leaseToken);
+  const job = await c.env.DB.prepare(
+    "SELECT user_id AS userId FROM jobs WHERE id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'processing' AND stage = 'rendering_clips' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP",
+  ).bind(body.jobId, body.leaseId, tokenHash).first<{ userId: string }>();
+  if (!job) return jsonError(c, "Clip rendering lease is invalid, expired, or cancelled.", 409);
+  if (body.clipIds.length) {
+    const uploads = await c.env.DB.prepare(
+      "SELECT id FROM clip_uploads WHERE job_id = ?1 AND user_id = ?2 AND lease_id = ?3 AND status = 'stored' AND id IN (SELECT value FROM json_each(?4))",
+    ).bind(body.jobId, job.userId, body.leaseId, JSON.stringify(body.clipIds)).all<{ id: string }>();
+    if (uploads.results.length !== body.clipIds.length) return jsonError(c, "Not all clips have been stored and verified.", 409);
+  }
+  const statements = [
+    c.env.DB.prepare(
+      "INSERT OR IGNORE INTO clips (id, job_id, user_id, candidate_id, output_key, title, description, hashtags_json, duration_seconds, aspect_ratio, size_bytes) SELECT id, job_id, user_id, candidate_id, object_key, title, 'Automatically selected highlight', '[\"#ClipForge\",\"#Gaming\"]', duration_seconds, '9:16', expected_size_bytes FROM clip_uploads WHERE job_id = ?1 AND user_id = ?2 AND lease_id = ?3 AND status = 'stored' AND id IN (SELECT value FROM json_each(?4))",
+    ).bind(body.jobId, job.userId, body.leaseId, JSON.stringify(body.clipIds)),
+    c.env.DB.prepare(
+      "UPDATE jobs SET status = 'completed', stage = 'completed', progress = 100, completed_at = CURRENT_TIMESTAMP, lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, error_code = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND user_id = ?2 AND lease_id = ?3 AND lease_token_hash = ?4 AND status = 'processing' AND stage = 'rendering_clips' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP AND (SELECT COUNT(*) FROM clips WHERE job_id = ?1 AND user_id = ?2 AND id IN (SELECT value FROM json_each(?5))) = ?6 RETURNING status",
+    ).bind(body.jobId, job.userId, body.leaseId, tokenHash, JSON.stringify(body.clipIds), body.clipIds.length),
+  ];
+  const results = await c.env.DB.batch(statements);
+  if (!(results[1]?.meta.changes ?? 0)) return jsonError(c, "Clip registration could not be finalized under the current lease.", 409);
+  return c.json({ ok: true, completed: true, clipCount: body.clipIds.length });
 });
 
 app.post("/internal/processor/source-ready", async (c) => {
@@ -907,9 +1113,28 @@ app.post("/api/jobs/cancel-all", async (c) => {
   return c.json({ requestedCount: result.meta.changes ?? 0 });
 });
 
+app.get("/api/clips/:clipId/download", async (c) => {
+  const clip = await c.env.DB.prepare(
+    "SELECT output_key AS outputKey, title FROM clips WHERE id = ?1 AND user_id = ?2",
+  ).bind(c.req.param("clipId"), c.get("user").id).first<{ outputKey: string; title: string }>();
+  if (!clip) return jsonError(c, "Clip not found.", 404);
+  const object = await c.env.MEDIA.get(clip.outputKey);
+  if (!object) return jsonError(c, "Clip file is unavailable.", 404);
+  const filename = clip.title.normalize("NFKC").replace(/[^a-zA-Z0-9 _-]/g, "").trim().slice(0, 80) || "clip";
+  return new Response(object.body, {
+    headers: {
+      "Content-Type": "video/mp4",
+      "Content-Length": String(object.size),
+      "Content-Disposition": `attachment; filename="${filename}.mp4"`,
+      "Cache-Control": "private, no-store",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+});
+
 app.get("/api/clips", async (c) => {
   const result = await c.env.DB.prepare(
-    "SELECT id, job_id AS jobId, title, description, hashtags_json AS hashtagsJson, duration_seconds AS durationSeconds, aspect_ratio AS aspectRatio, created_at AS createdAt FROM clips WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 100",
+    "SELECT id, job_id AS jobId, title, description, hashtags_json AS hashtagsJson, duration_seconds AS durationSeconds, aspect_ratio AS aspectRatio, size_bytes AS sizeBytes, created_at AS createdAt FROM clips WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 100",
   )
     .bind(c.get("user").id)
     .all();
