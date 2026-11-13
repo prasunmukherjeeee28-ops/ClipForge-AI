@@ -348,7 +348,7 @@ app.post("/internal/processor/transcription-ready", async (c) => {
     !Number.isInteger(body.transcriptSegmentCount) || body.transcriptSegmentCount! < 0 || body.transcriptSegmentCount! > 500000 ||
     !Number.isSafeInteger(body.transcriptSizeBytes) || body.transcriptSizeBytes! < 2 || body.transcriptSizeBytes! > 100000000 ||
     typeof body.transcriptSha256 !== "string" || !/^[a-f0-9]{64}$/.test(body.transcriptSha256) ||
-    candidates.some((item) => item.endSeconds! > body.durationSeconds!)
+    candidates!.some((item) => item.endSeconds! > body.durationSeconds!)
   ) {
     return jsonError(c, "Invalid media, transcript, or moment-candidate result.", 400);
   }
@@ -357,17 +357,28 @@ app.post("/internal/processor/transcription-ready", async (c) => {
   const leasePredicate = "id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'processing' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP AND source_type = 'video' AND source_asset_id IS NOT NULL AND EXISTS (SELECT 1 FROM source_assets WHERE source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id AND source_assets.status = 'ready')";
   const statements = [
     c.env.DB.prepare(
-      `DELETE FROM moment_candidates WHERE job_id = ?1 AND EXISTS (SELECT 1 FROM jobs WHERE ${leasePredicate})`,
+      `DELETE FROM candidates WHERE job_id = ?1 AND EXISTS (SELECT 1 FROM jobs WHERE ${leasePredicate})`,
     ).bind(body.jobId, body.leaseId, tokenHash),
-    ...candidates.map((item) => c.env.DB.prepare(
-      `INSERT INTO moment_candidates (id, job_id, user_id, start_seconds, end_seconds, score, acoustic_salience, transcript_velocity, narrative_arc, novelty, word_count, marker_count, rationale) SELECT ?1, jobs.id, jobs.user_id, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11 FROM jobs WHERE ${leasePredicate}`,
-    ).bind(
-      uuid(), item.startSeconds, item.endSeconds, item.score,
-      item.signals!.acousticSalience, item.signals!.transcriptVelocity,
-      item.signals!.narrativeArc, item.signals!.novelty,
-      item.wordCount, item.markerCount, item.rationale,
-      body.jobId, body.leaseId, tokenHash,
-    )),
+    c.env.DB.prepare(
+      `INSERT INTO candidates (id, job_id, start_seconds, end_seconds, score, acoustic_salience, transcript_velocity, narrative_arc, novelty, word_count, marker_count, rationale)
+       SELECT lower(hex(randomblob(16))), jobs.id,
+         json_extract(candidate.value, '$.startSeconds'),
+         json_extract(candidate.value, '$.endSeconds'),
+         json_extract(candidate.value, '$.score'),
+         json_extract(candidate.value, '$.signals.acousticSalience'),
+         json_extract(candidate.value, '$.signals.transcriptVelocity'),
+         json_extract(candidate.value, '$.signals.narrativeArc'),
+         json_extract(candidate.value, '$.signals.novelty'),
+         json_extract(candidate.value, '$.wordCount'),
+         json_extract(candidate.value, '$.markerCount'),
+         json_extract(candidate.value, '$.rationale')
+       FROM jobs, json_each(?4) AS candidate
+       WHERE jobs.id = ?1 AND jobs.lease_id = ?2 AND jobs.lease_token_hash = ?3
+         AND jobs.status = 'processing' AND jobs.cancel_requested = 0
+         AND jobs.lease_expires_at > CURRENT_TIMESTAMP AND jobs.source_type = 'video'
+         AND jobs.source_asset_id IS NOT NULL
+         AND EXISTS (SELECT 1 FROM source_assets WHERE source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id AND source_assets.status = 'ready')`,
+    ).bind(body.jobId, body.leaseId, tokenHash, JSON.stringify(candidates)),
     c.env.DB.prepare(
       `UPDATE jobs SET media_container = ?1, media_video_codec = ?2, media_source_audio_codec = ?3, media_width = ?4, media_height = ?5, media_duration_seconds = ?6, audio_codec = ?7, audio_sample_rate = ?8, audio_channels = ?9, audio_size_bytes = ?10, media_verified_at = CURRENT_TIMESTAMP, transcript_model = ?11, transcript_language = ?12, transcript_segment_count = ?13, transcript_size_bytes = ?14, transcript_sha256 = ?15, transcript_verified_at = CURRENT_TIMESTAMP, status = 'review', stage = 'moments_ready', progress = 70, error_code = NULL, lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE ${leasePredicate}`,
     ).bind(
@@ -857,7 +868,7 @@ app.get("/api/jobs/:jobId/moments", async (c) => {
   ).bind(jobId, userId).first();
   if (!job) return jsonError(c, "Job not found.", 404);
   const result = await c.env.DB.prepare(
-    "SELECT id, start_seconds AS startSeconds, end_seconds AS endSeconds, score, acoustic_salience AS acousticSalience, transcript_velocity AS transcriptVelocity, narrative_arc AS narrativeArc, novelty, word_count AS wordCount, marker_count AS markerCount, rationale FROM moment_candidates WHERE job_id = ?1 AND user_id = ?2 ORDER BY score DESC, start_seconds ASC",
+    "SELECT id, start_seconds AS startSeconds, end_seconds AS endSeconds, score, acoustic_salience AS acousticSalience, transcript_velocity AS transcriptVelocity, narrative_arc AS narrativeArc, novelty, word_count AS wordCount, marker_count AS markerCount, rationale FROM candidates WHERE job_id = ?1 AND EXISTS (SELECT 1 FROM jobs WHERE jobs.id = candidates.job_id AND jobs.user_id = ?2) ORDER BY score DESC, start_seconds ASC",
   ).bind(jobId, userId).all();
   return c.json({ candidates: result.results });
 });
