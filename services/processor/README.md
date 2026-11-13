@@ -17,7 +17,8 @@ D1-backed single-job processor for private, creator-authorized VOD files. It ver
 - Computes one-second RMS loudness and zero-crossing features from the normalized WAV without loading the full audio into memory.
 - Scans multi-scale 15–90 second windows using transcript word density, reaction phrases, speech coverage, acoustic changes and within-VOD phrase rarity; overlapping candidates are deduplicated with temporal IoU non-maximum suppression.
 - Uses a provider-neutral Pydantic scoring contract. The current local adapter is deterministic and makes no LLM calls, invented category labels or title suggestions.
-- Reports media and transcript verification metadata to D1 and moves a successful job to `review` / `transcribed`.
+- Sends up to 50 candidates through a lease-scoped callback; D1 persists timestamps, transcript excerpts, 0–100 scores, four feature signals and rationale. Each candidate begins with category `unknown` until semantic classification is implemented.
+- Exposes owner-scoped candidate retrieval and review-status endpoints. The processor keeps the lease through candidate analysis and releases it only when candidate persistence succeeds.
 - Renews the 90-second lease every 25 seconds and stops work when cancellation or lease loss is detected.
 
 The user must upload an original/export or another provider-approved file they have permission to process. A public YouTube or Twitch URL and official metadata do not prove permission to process a media file. The worker does not scrape platform pages, bypass access controls or download video bytes from YouTube/Twitch.
@@ -26,7 +27,7 @@ The user must upload an original/export or another provider-approved file they h
 
 - Python 3.11+
 - FFmpeg and FFprobe installed on the processor host and available on PATH, or configured using `FFMPEG_BINARY` and `FFPROBE_BINARY`.
-- A deployed Worker with migrations `0001_initial.sql` through `0007_transcription.sql` applied.
+- A deployed Worker with migrations `0001_initial.sql` through `0008_candidate_persistence.sql` applied.
 - Cloudflare Access configured for the two intended users.
 - Worker secret `PROCESSOR_SHARED_SECRET` set to a random value of at least 32 characters and supplied to the processor environment. Never commit it.
 - Persistent, access-restricted volumes mounted at `PROCESSOR_SCRATCH_DIR` and `PROCESSOR_STT_MODEL_CACHE_DIR`. Audio and transcript artifacts remain on the trusted processor host; the model cache avoids downloading weights for every job. The model is downloaded from its model registry on first use, so allow outbound HTTPS during initial setup or pre-populate the cache before running jobs.
@@ -59,8 +60,9 @@ Media-processing options:
 - `PROCESSOR_STT_BEAM_SIZE` (default 1; allowed 1–5)
 - `PROCESSOR_STT_LANGUAGE` (optional language code; empty means automatic detection)
 - `PROCESSOR_STT_CHUNK_TIMEOUT_SECONDS` (default 1800; allowed 60–3600)
+- `PROCESSOR_MOMENTS_TIMEOUT_SECONDS` (default 1800; allowed 60–3600)
 
-The source upload API caps input files at 2 GiB and source storage at 8 GiB per account. The processor caps normalized WAV output at 1.5 GB. Moment analysis currently caps transcript JSON at 100 MB and emits at most 100 shortlisted candidates. FFmpeg is invoked with argument arrays, never through a shell, with a bounded timeout and thread count.
+The source upload API caps input files at 2 GiB and source storage at 8 GiB per account. The processor caps normalized WAV output at 1.5 GB. Moment analysis currently caps transcript JSON at 100 MB and persists at most 50 shortlisted candidates per job. FFmpeg is invoked with argument arrays, never through a shell, with a bounded timeout and thread count.
 
 ## Local setup
 
@@ -104,10 +106,11 @@ Do not run multiple copies of this one-job worker simultaneously. The worker han
 6. The processor requests the attached source from the signed internal endpoint. The Worker validates the current lease and owner match, then streams the private R2 body directly without buffering the full file in Worker memory.
 7. FFprobe validates the actual local file. FFmpeg extracts the first audio stream into mono 16 kHz PCM WAV.
 8. The processor writes `audio.wav` and `media.json` under `<scratch>/users/<user-uuid>/<job-uuid>/`, removes the temporary downloaded source, then runs local speech recognition in an isolated child process. Five-minute chunks are checkpointed atomically so an expired lease or process restart can resume completed chunks.
-9. The processor writes `transcript.json` with absolute segment and word timestamps, language metadata, and a SHA-256 digest. Only transcript verification metadata is sent to D1; audio and transcript text remain on private processor storage. The job moves to `review` / `transcribed`.
-10. The local moment-analysis module reads the retained WAV and transcript, calculates lightweight one-second audio features, scores overlapping multi-scale candidate windows, and applies IoU-based NMS. It writes no D1 rows or R2 objects yet; candidate persistence and UI review are the next integration step.
+9. The processor writes `transcript.json` with absolute segment and word timestamps, language metadata, and a SHA-256 digest. Only transcript verification metadata is sent to D1; audio and transcript text remain on private processor storage. The job remains under its active lease at stage `transcribed`.
+10. The local moment-analysis module reads the retained WAV and transcript in an isolated subprocess, calculates lightweight one-second audio features, scores overlapping multi-scale candidate windows, and applies IoU-based NMS.
+11. Up to 50 candidates, including timestamps, excerpt, score, signal breakdown and rationale, are persisted transactionally through a lease-scoped Worker callback. The job transitions to `review` / `moments_detected`; the account owner can retrieve and mark candidates through authenticated API routes.
 
-Audio and transcript artifacts are not yet copied to R2. Keep processor volumes persistent and private until moment detection consumes them. Configure encryption-at-rest, backup and retention at the host/storage layer. Automated intermediate-artifact cleanup is a later task.
+Audio, transcript and candidate report artifacts are not yet copied to R2. Keep processor volumes persistent and private until the renderer consumes them. Configure encryption-at-rest, backup and retention at the host/storage layer. Automated intermediate-artifact cleanup is a later task.
 
 ## Request signing
 
@@ -125,11 +128,11 @@ Each request uses a fresh random nonce. The Worker stores only its SHA-256 hash 
 
 ## Next implementation steps
 
-1. Persist owner-scoped moment candidates in D1, connect candidate progress to the job lifecycle, and add review UI/API integration.
+1. Connect the candidate review API to the existing editor/library UI and test the two-account access boundary.
 2. Add optional provider adapters for semantic payoff verification only after local heuristic quality is measured; benchmark acoustic event detection before adding a model such as YAMNet.
 3. Add FFmpeg 9:16 rendering, subtitle burn-in, private clip storage and idempotent clip registration.
 4. Move intermediate audio, transcripts and candidate artifacts to lifecycle-managed private R2 storage and add automated retention/cleanup.
-5. Connect the remaining dashboard, library, editor and job-progress screens to real API data.
+5. Connect dashboard, library, editor and job-progress screens to real API data.
 6. Add live-stream processing after the VOD pipeline is stable.
 
 The code and tests do not prove that a live Cloudflare account, R2 bucket or production processor host is configured correctly. No Cloudflare resources are created or deployed by these changes.
