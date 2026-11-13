@@ -75,13 +75,10 @@ export async function getCurrentUser(): Promise<CurrentUser> {
   return result.user;
 }
 
-export async function createSourceJob(
-  sourceUrl: string,
-  options: { captions: boolean; vertical: boolean; reviewScores: boolean },
-): Promise<JobSubmission> {
+export async function createSourceJob(sourceUrl: string): Promise<JobSubmission> {
   const result = await request<{ jobs: JobSubmission[] }>("/api/jobs", {
     method: "POST",
-    body: JSON.stringify({ urls: [sourceUrl], options }),
+    body: JSON.stringify({ urls: [sourceUrl] }),
   });
   if (!result.jobs?.[0]?.id) throw new Error("The API did not create a source job.");
   return result.jobs[0];
