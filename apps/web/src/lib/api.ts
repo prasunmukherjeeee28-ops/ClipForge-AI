@@ -256,3 +256,24 @@ export async function retryClipRender(clipId: string): Promise<void> {
     { method: "POST", body: JSON.stringify({}) },
   );
 }
+
+export interface UserJob {
+  id: string;
+  sourceUrl: string;
+  sourcePlatform: "youtube" | "twitch";
+  sourceType: "unknown" | "live" | "video";
+  sourceDurationSeconds: number | null;
+  mediaDurationSeconds: number | null;
+  title: string | null;
+  status: "queued" | "processing" | "review" | "completed" | "failed" | "cancelled";
+  progress: number;
+  stage: string;
+  errorCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function getJobs(): Promise<UserJob[]> {
+  const result = await request<{ jobs: UserJob[] }>("/api/jobs");
+  return result.jobs ?? [];
+}
