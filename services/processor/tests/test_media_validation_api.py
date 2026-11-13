@@ -27,6 +27,7 @@ def make_db() -> sqlite3.Connection:
         "0005_authorized_source_assets.sql",
         "0006_media_validation.sql",
         "0007_transcription.sql",
+        "0008_moment_candidates.sql",
     ):
         db.executescript((ROOT / "database/migrations" / migration).read_text())
     db.executemany(
@@ -196,7 +197,7 @@ def test_transcription_ready_persists_media_and_transcript_metadata() -> None:
         """
     ).fetchone()
     assert tuple(row) == (
-        "transcribed", 60, "mov,mp4,m4a", 4_000_044,
+        "moments_ready", 70, "mov,mp4,m4a", 4_000_044,
         "base", "en", 42, 12_345, "a" * 64, None,
     )
 
