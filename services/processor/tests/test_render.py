@@ -106,3 +106,28 @@ def test_timeout_is_reported_without_exposing_process_output(tmp_path: Path, mon
         render_vertical_clip(source, transcript, tmp_path / "clip.mp4", start_seconds=0, end_seconds=10)
     assert error.value.code == "render_timeout"
     assert "private process output" not in str(error.value)
+
+
+def test_tracked_subject_filter_creates_bounded_smooth_portrait_crop() -> None:
+    from clipforge_processor.render import _tracked_subject_filter
+    from clipforge_processor.visual_analysis import ObjectDetection
+
+    observations = [
+        ObjectDetection(10.0, 2, "car", 0.9, 0.10, 0.25, 0.15, 0.2),
+        ObjectDetection(11.0, 2, "car", 0.9, 0.60, 0.25, 0.15, 0.2),
+    ]
+    graph = _tracked_subject_filter(
+        1920, 1080, observations, clip_start=10.0, clip_end=12.0
+    )
+    assert graph is not None
+    assert graph.startswith("crop=608:1080:")
+    assert "scale=1080:1920" in graph
+    assert "if(lt(t,1.000)" in graph
+
+
+def test_tracked_subject_filter_returns_none_without_observations() -> None:
+    from clipforge_processor.render import _tracked_subject_filter
+
+    assert _tracked_subject_filter(
+        1920, 1080, [], clip_start=0.0, clip_end=10.0
+    ) is None
