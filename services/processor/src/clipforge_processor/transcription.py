@@ -283,11 +283,10 @@ def transcribe_audio(
 
     windows = list(chunk_windows(duration_seconds, chunk_seconds))
     checkpoint_paths = [chunk_dir / f"{index:06d}.json" for index, *_ in windows]
-    completed_payloads = {
-        index: _read_chunk(path, index)
-        for (index, *_), path in zip(windows, checkpoint_paths)
-    }
-    missing = [window for window in windows if completed_payloads[window[0]] is None]
+    missing = [
+        window for window, path in zip(windows, checkpoint_paths)
+        if _read_chunk(path, window[0]) is None
+    ]
     if progress_callback:
         progress_callback({"event": "started", "totalChunks": len(windows), "completedChunks": len(windows) - len(missing)})
 
@@ -308,8 +307,9 @@ def transcribe_audio(
     segment_count = 0
 
     for index, central_start, central_end, extract_start, extract_end in windows:
-        checkpoint = completed_payloads[index]
-        if checkpoint is None:
+        checkpoint = _read_chunk(checkpoint_paths[index], index)
+        chunk_was_missing = checkpoint is None
+        if chunk_was_missing:
             chunk_path = chunk_dir / f"{index:06d}.wav"
             try:
                 extractor(
@@ -383,7 +383,7 @@ def transcribe_audio(
             raise TranscriptionError("transcription_output_limit_exceeded", "The transcript contains too many segments.")
 
         if progress_callback:
-            completed_count += 1 if completed_payloads[index] is None else 0
+            completed_count += 1 if chunk_was_missing else 0
             progress_callback({
                 "event": "progress",
                 "completedChunks": completed_count,
