@@ -38,6 +38,6 @@ See `docs/ARCHITECTURE.md`, `docs/API.md`, `apps/api/README.md` and `services/pr
 
 ## Current status
 
-The VOD processing code and owner-scoped API routes are present on `main). The processor container bootstrap and continuous polling are being added on the current feature branch. The connected Cloudflare account still needs private R2 enabled and created, migrations applied to `clipforge-db), Access allowlist values configured, and the intended API Worker deployed. A real authorized media job through to a private clip download has not yet been verified end to end.
+The VOD processing code and owner-scoped API routes are present on `main`. This change adds the processor container bootstrap and continuous polling; it does not deploy the processor or API. The connected Cloudflare account still needs private R2 enabled and created, migrations applied to `clipforge-db`, Access allowlist values configured, and the intended API Worker deployed. A real authorized media job through to a private clip download has not yet been verified end to end.
 
 Never commit `.env` files, Worker secrets, API keys, lease tokens, uploaded videos, audio, or transcripts. The local `.env.example` is a template only.
