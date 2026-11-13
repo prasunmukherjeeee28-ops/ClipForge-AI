@@ -13,6 +13,7 @@ from .media import MediaProcessingError, extract_audio, probe_media
 from .source_adapters import SourceInspectionError, inspect_video_url
 from .transcription_runner import run_transcription_process
 from .moments_runner import run_moment_process
+from .render import ClipRenderError, render_clip
 
 T = TypeVar("T")
 
@@ -129,6 +130,219 @@ def _write_manifest(job_dir: Path, job_id: str, user_id: str, source_asset_id: s
     temporary.replace(final)
 
 
+async def _render_heartbeat_loop(
+    client: ProcessorClient,
+    clip_id: str,
+    lease_id: str,
+    lease_token: str,
+    stop: asyncio.Event,
+    cancelled: asyncio.Event,
+    lease_lost: asyncio.Event,
+) -> None:
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=25)
+            return
+        except asyncio.TimeoutError:
+            pass
+        try:
+            result = await client.render_heartbeat(clip_id, lease_id, lease_token)
+        except Exception:
+            lease_lost.set()
+            return
+        if result.get("cancelRequested") is True:
+            cancelled.set()
+            return
+
+
+async def _run_render_once(client: ProcessorClient, settings: Settings) -> int:
+    claimed = await client.claim_render(settings.worker_id)
+    clip = claimed.get("clip")
+    if clip is None:
+        print("No queued VOD or clip-render jobs.")
+        return 0
+
+    lease = claimed["lease"]
+    clip_id = clip["id"]
+    job_id = clip["jobId"]
+    user_id = clip["userId"]
+    lease_id = lease["leaseId"]
+    lease_token = lease["leaseToken"]
+    try:
+        safe_clip_id = str(uuid.UUID(clip_id))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValueError("The render queue returned an invalid clip identifier.") from exc
+
+    stop_heartbeat = asyncio.Event()
+    cancelled = asyncio.Event()
+    lease_lost = asyncio.Event()
+    heartbeat_task = asyncio.create_task(
+        _render_heartbeat_loop(
+            client, clip_id, lease_id, lease_token,
+            stop_heartbeat, cancelled, lease_lost,
+        )
+    )
+
+    try:
+        job_dir = _private_job_directory(settings.scratch_dir, user_id, job_id)
+        renders_dir = job_dir / "renders"
+        if renders_dir.exists() and renders_dir.is_symlink():
+            raise ValueError("Render output paths must not be symlinks.")
+        renders_dir.mkdir(mode=0o700, exist_ok=True)
+        renders_dir.chmod(0o700)
+
+        try:
+            options = json.loads(clip.get("renderOptionsJson") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            options = {}
+        if not isinstance(options, dict):
+            options = {}
+        captions = options.get("captions") is not False
+        resolution = options.get("resolution", "1080x1920")
+        if resolution not in {"1080x1920", "720x1280"}:
+            resolution = "1080x1920"
+
+        source_path = renders_dir / f"{safe_clip_id}.source"
+        output_path = renders_dir / f"{safe_clip_id}.mp4"
+        transcript_path = job_dir / "transcription" / "transcript.json"
+
+        await _with_lease(
+            client.render_progress(clip_id, lease_id, lease_token, 5),
+            cancelled,
+            lease_lost,
+        )
+        source_size = await _with_lease(
+            client.download_render_source(
+                clip_id, lease_id, lease_token, source_path,
+                max_bytes=2_147_483_648,
+            ),
+            cancelled,
+            lease_lost,
+        )
+        await _with_lease(
+            client.render_progress(clip_id, lease_id, lease_token, 15),
+            cancelled,
+            lease_lost,
+        )
+
+        result = await _with_lease(
+            render_clip(
+                source_path,
+                transcript_path,
+                output_path,
+                start_seconds=float(clip["startSeconds"]),
+                end_seconds=float(clip["endSeconds"]),
+                captions=captions,
+                resolution=resolution,
+                ffmpeg_binary=settings.ffmpeg_binary,
+                ffprobe_binary=settings.ffprobe_binary,
+                timeout_seconds=settings.render_timeout_seconds,
+                threads=settings.ffmpeg_threads,
+            ),
+            cancelled,
+            lease_lost,
+        )
+        await _with_lease(
+            client.render_progress(clip_id, lease_id, lease_token, 75),
+            cancelled,
+            lease_lost,
+        )
+
+        upload = await _with_lease(
+            client.render_upload_init(
+                clip_id, lease_id, lease_token, result.size_bytes
+            ),
+            cancelled,
+            lease_lost,
+        )
+        part_size = upload.get("partSizeBytes")
+        part_count = upload.get("partCount")
+        uploaded_parts = upload.get("uploadedParts")
+        expected_parts = (result.size_bytes + 8 * 1024 * 1024 - 1) // (8 * 1024 * 1024)
+        if (
+            part_size != 8 * 1024 * 1024
+            or part_count != expected_parts
+            or not isinstance(uploaded_parts, list)
+        ):
+            raise ClipRenderError("clip_upload_session_invalid", "The private output upload session is invalid.")
+
+        completed_parts = {
+            item.get("partNumber")
+            for item in uploaded_parts
+            if isinstance(item, dict) and isinstance(item.get("partNumber"), int)
+        }
+        with output_path.open("rb") as source:
+            for part_number in range(1, part_count + 1):
+                if part_number in completed_parts:
+                    continue
+                chunk = source.read(part_size)
+                expected_size = min(part_size, result.size_bytes - (part_number - 1) * part_size)
+                if len(chunk) != expected_size:
+                    raise ClipRenderError("clip_output_read_failed", "The rendered MP4 changed during upload.")
+                await _with_lease(
+                    client.upload_render_part(
+                        clip_id, lease_id, lease_token, part_number, chunk
+                    ),
+                    cancelled,
+                    lease_lost,
+                )
+                progress = 76 + round(18 * part_number / max(1, part_count))
+                await _with_lease(
+                    client.render_progress(clip_id, lease_id, lease_token, min(95, progress)),
+                    cancelled,
+                    lease_lost,
+                )
+        completion = await _with_lease(
+            client.render_complete(clip_id, lease_id, lease_token),
+            cancelled,
+            lease_lost,
+        )
+        source_path.unlink(missing_ok=True)
+        output_path.unlink(missing_ok=True)
+        output_path.with_suffix(".ass").unlink(missing_ok=True)
+        print(
+            "Clip rendering finished:",
+            json.dumps(
+                {
+                    "clipId": clip_id,
+                    "jobId": job_id,
+                    "sourceBytes": source_size,
+                    "outputBytes": result.size_bytes,
+                    "durationSeconds": result.duration_seconds,
+                    "resolution": f"{result.width}x{result.height}",
+                    "captions": captions,
+                    "status": completion.get("status", "ready"),
+                },
+                ensure_ascii=False,
+            ),
+        )
+        return 0
+    except JobCancelled:
+        await client.render_fail(clip_id, lease_id, lease_token, "cancelled_by_user")
+        print("Clip render cancelled:", json.dumps({"clipId": clip_id}))
+        return 0
+    except LeaseLost:
+        print("Clip render lease lost; stopping without modifying the clip.")
+        return 0
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        if not isinstance(code, str) or not re.fullmatch(r"[a-z0-9_]{1,60}", code):
+            code = "clip_render_failed"
+        try:
+            result = await client.render_fail(clip_id, lease_id, lease_token, code)
+        except Exception:
+            result = {"accepted": False}
+        print(
+            "Clip rendering failed:",
+            json.dumps({"clipId": clip_id, "errorCode": code, "result": result}),
+        )
+        return 0
+    finally:
+        stop_heartbeat.set()
+        heartbeat_task.cancel()
+        await asyncio.gather(heartbeat_task, return_exceptions=True)
+
+
 async def run_once() -> int:
     """Inspect one VOD, validate its owner-provided file, and retain normalized audio in private scratch."""
     settings = Settings.from_env()
@@ -145,8 +359,7 @@ async def run_once() -> int:
         claimed = await client.claim(settings.worker_id)
         job = claimed.get("job")
         if job is None:
-            print("No queued jobs.")
-            return 0
+            return await _run_render_once(client, settings)
 
         lease = claimed["lease"]
         job_id = job["id"]
