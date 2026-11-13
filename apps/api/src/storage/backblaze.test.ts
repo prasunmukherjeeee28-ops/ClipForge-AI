@@ -25,7 +25,7 @@ describe("BackblazeBucket configuration", () => {
 describe("BackblazeBucket object operations", () => {
   it("uses path-style addressing and RFC3986-encodes object key segments", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = new URL(String(input));
+      const url = new URL(input instanceof Request ? input.url : String(input));
       expect(url.pathname).toBe("/clipforge-private-media/clips/user%21%27%28%29%2A/file%20name.mp4");
       return new Response(null, { status: 200, headers: { "content-length": "123", etag: '"abc"' } });
     });
@@ -52,7 +52,8 @@ describe("BackblazeBucket object operations", () => {
 
   it("accepts a matching byte-range response", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      expect(new Headers(init?.headers).get("range")).toBe("bytes=8-11");
+      const requestHeaders = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+      expect(requestHeaders.get("range")).toBe("bytes=8-11");
       return new Response(new Uint8Array(4), {
         status: 206,
         headers: { "content-length": "4", "content-range": "bytes 8-11/20", etag: '"part"' },
@@ -67,8 +68,8 @@ describe("BackblazeBucket object operations", () => {
   it("validates multipart sequencing and completes only after object verification", async () => {
     const requests: Array<{ method: string; url: URL; body: BodyInit | null }> = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = new URL(String(input));
-      const method = init?.method ?? "GET";
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const method = init?.method ?? (input instanceof Request ? input.method : "GET");
       requests.push({ method, url, body: init?.body ?? null });
       if (method === "POST" && url.searchParams.has("uploads")) {
         return new Response("<InitiateMultipartUploadResult><UploadId>upload-123</UploadId></InitiateMultipartUploadResult>");
