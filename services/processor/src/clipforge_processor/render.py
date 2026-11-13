@@ -91,7 +91,7 @@ def _write_srt(transcript_path: Path, destination: Path, clip_start: float, clip
         entries.append(
             f"{len(entries) + 1}\n"
             f"{_timestamp(left - clip_start)} --> {_timestamp(right - clip_start)}\n"
-            + "\\n".join(lines[:2])
+            + "\n".join(lines[:2])
         )
 
     destination.write_text("\n\n".join(entries) + ("\n" if entries else ""), encoding="utf-8")
