@@ -98,7 +98,8 @@ async function request(
   token: "alice-token" | "bob-token" | "eve-token" | null,
   overrides: Partial<typeof env> = {},
 ) {
-  const headers = token ? { "Cf-Access-Jwt-Assertion": token } : {};
+  const headers = new Headers();
+  if (token) headers.set("Cf-Access-Jwt-Assertion", token);
   return worker.fetch(
     new Request(`https://clipforge.test${path}`, { headers }),
     { ...env, ...overrides } as never,
