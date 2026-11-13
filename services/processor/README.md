@@ -149,7 +149,7 @@ The Compose service does not publish a port. It makes outbound HTTPS requests to
 11. The processor chooses up to three non-overlapping candidates, renders vertical MP4s with synchronized SRT captions, uploads them in 8 MiB multipart chunks to owner-scoped private object storage keys, and verifies each completed object.
 12. A final lease-checked callback atomically registers the stored clips in D1 and completes the job. The authenticated `/api/clips` list is owner-scoped; `/api/clips/:clipId/download` streams only the current user's private object.
 
-The source video is deleted from processor scratch only after successful clip registration. Audio and transcript artifacts remain on the private persistent processor volume for now; configure encryption-at-rest, backup and retention at the host/storage layer. Automated intermediate-artifact cleanup and artifact lifecycle management remain follow-up work.
+Each job's entire private scratch directory, including downloaded source media, normalized audio, transcripts, manifests and intermediate renders, is removed in the worker's `finally` cleanup path after success, failure, cancellation or lease loss. The model-weight cache lives separately at `PROCESSOR_STT_MODEL_CACHE_DIR` and is retained across jobs; keep that volume private, access-restricted and persistent to avoid re-downloading model weights. A hard host termination (for example, a forced kill before `finally` can run) can still leave scratch data behind, so keep the scratch volume private and apply host-level retention safeguards.
 
 ## Request signing
 
@@ -170,7 +170,7 @@ Each request uses a fresh random nonce. The Worker stores only its SHA-256 hash 
 1. Complete a live-cloud smoke test after the D1 migrations are applied, private object storage is enabled, the Worker is deployed and Access is restricted to the two users. Verify source multipart upload, owner-matched source streaming, clip multipart upload, D1 registration, preview byte ranges and download isolation.
 2. Add repeatable Cloudflare integration tests for D1 migrations and object storage multipart completion/abort, including failure cleanup and cross-user access rejection.
 3. Add render QA (duration, codec, audio presence, subtitle timing and output decode checks) plus retry-safe cleanup for orphaned object storage multipart uploads.
-4. Benchmark candidate precision, recall, boundary accuracy and processor throughput on an annotated GTA VI VOD set before tuning scoring weights or adding acoustic models.
+4. Benchmark candidate precision, recall, boundary accuracy and processor throughput on an authorized, human-labelled VOD set before tuning scoring weights or adding acoustic models.
 5. Benchmark the optional semantic adapter on a human-labelled dataset before relying on model categories or title hints.
 6. Move intermediate audio/transcript artifacts to lifecycle-managed private storage and add automated retention/cleanup.
 7. Connect the editor to generated clip media and add non-destructive trim controls only when server-side re-rendering is implemented.

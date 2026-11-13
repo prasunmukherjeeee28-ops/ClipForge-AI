@@ -7,16 +7,20 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PROCESSOR_STT_MODEL_CACHE_DIR=/var/cache/clipforge/models
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y ca-certificates ffmpeg libgomp1 \
+    && apt-get install --no-install-recommends -y ca-certificates ffmpeg gosu libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/clipforge
 COPY services/processor/pyproject.toml ./pyproject.toml
 COPY services/processor/src ./src
-RUN python -m pip install --no-cache-dir . \
+COPY services/processor/entrypoint.sh /usr/local/bin/clipforge-processor-entrypoint
+RUN chmod 0755 /usr/local/bin/clipforge-processor-entrypoint \
+    && python -m pip install --no-cache-dir . \
     && mkdir -p /var/lib/clipforge/scratch /var/cache/clipforge/models \
     && chown -R 10001:10001 /opt/clipforge /var/lib/clipforge /var/cache/clipforge
 
-USER 10001:10001
+# Railway mounts persistent volumes as root. The entrypoint prepares those mount points,
+# then drops to UID 10001 before starting the processor.
+USER root
 
-ENTRYPOINT ["python", "-m", "clipforge_processor.worker"]
+ENTRYPOINT ["/usr/local/bin/clipforge-processor-entrypoint"]
