@@ -664,7 +664,7 @@ app.post("/internal/processor/render-complete", async (c) => {
   if (!body?.clipId || !body.leaseId || !body.leaseToken) return jsonError(c, "Invalid render completion payload.", 400);
   const tokenHash = await sha256Hex(body.leaseToken);
   const clip = await c.env.DB.prepare(
-    "SELECT output_key AS outputKey, upload_id AS uploadId, upload_size_bytes AS uploadSizeBytes FROM clips WHERE id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'rendering' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP AND upload_id IS NOT NULL",
+    "SELECT output_key AS outputKey, upload_id AS uploadId, upload_size_bytes AS uploadSizeBytes, output_sha256 AS outputSha256 FROM clips WHERE id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'rendering' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP AND upload_id IS NOT NULL",
   ).bind(body.clipId, body.leaseId, tokenHash).first<{
     outputKey: string; uploadId: string; uploadSizeBytes: number; outputSha256: string;
   }>();
