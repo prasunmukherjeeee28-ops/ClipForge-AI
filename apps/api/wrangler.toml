@@ -11,13 +11,13 @@ enabled = true
 
 [[d1_databases]]
 binding = "DB"
-database_name = "clipforge-db"
-database_id = "a0d7b181-ea86-46ed-abb9-ffcc73e74a7c"
+database_name = "clipforge-app-db"
+database_id = "664858ab-96b6-435a-96da-95cdbd110c5a"
 migrations_dir = "../../database/migrations"
 
-[[r2_buckets]]
-binding = "MEDIA"
-bucket_name = "clipforge-private-media"
+# Backblaze B2 is configured through B2_ENDPOINT, B2_REGION and B2_BUCKET vars,
+# plus B2_ACCESS_KEY_ID and B2_SECRET_ACCESS_KEY Worker secrets.
+# Do not add R2 bindings when OBJECT_STORAGE_PROVIDER is Backblaze.
 
 # Jobs are claimed directly from D1 by the authenticated Python processor.
 # Configure PROCESSOR_SHARED_SECRET with: wrangler secret put PROCESSOR_SHARED_SECRET
