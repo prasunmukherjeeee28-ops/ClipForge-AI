@@ -1,5 +1,6 @@
 import { HashRouter, Routes, Route } from "react-router-dom";
 import { AppShell } from "@/components/layout/app-shell";
+import { SessionGate } from "@/components/auth/session-gate";
 import { DashboardPage } from "@/features/dashboard/dashboard-page";
 import { UploadPage } from "@/features/upload/upload-page";
 import { LibraryPage } from "@/features/library/library-page";
@@ -31,7 +32,13 @@ export default function App() {
   return (
     <HashRouter>
       <Routes>
-        <Route element={<AppShell />}>
+        <Route
+          element={
+            <SessionGate>
+              <AppShell />
+            </SessionGate>
+          }
+        >
           <Route index element={<DashboardPage />} />
           <Route path="upload" element={<UploadPage />} />
           <Route path="library" element={<LibraryPage />} />
