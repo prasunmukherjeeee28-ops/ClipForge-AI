@@ -1232,7 +1232,7 @@ app.post("/api/candidates/:candidateId/render", async (c) => {
   const ss = Math.floor(candidate.startSeconds % 60);
   const title = `Highlight ${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
   const inserted = await c.env.DB.prepare(
-    "INSERT INTO clips (id, job_id, user_id, candidate_id, output_key, title, description, duration_seconds, aspect_ratio, status, progress, render_options_json) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, '9:16', 'queued', 0, ?9 WHERE EXISTS (SELECT 1 FROM candidates INNER JOIN jobs ON jobs.id = candidates.job_id AND jobs.user_id = ?3 INNER JOIN source_assets ON source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id AND source_assets.status = 'ready' WHERE candidates.id = ?4 AND candidates.review_status = 'selected' AND jobs.transcript_verified_at IS NOT NULL) ON CONFLICT(candidate_id) DO NOTHING",
+    "INSERT INTO clips (id, job_id, user_id, candidate_id, output_key, title, description, duration_seconds, aspect_ratio, status, progress, render_options_json) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, '9:16', 'queued', 0, ?9 WHERE EXISTS (SELECT 1 FROM candidates INNER JOIN jobs ON jobs.id = candidates.job_id AND jobs.user_id = ?3 INNER JOIN source_assets ON source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id AND source_assets.status = 'ready' WHERE candidates.id = ?4 AND candidates.review_status = 'selected' AND jobs.transcript_verified_at IS NOT NULL) ON CONFLICT(candidate_id) WHERE candidate_id IS NOT NULL DO NOTHING",
   ).bind(
     id, candidate.jobId, userId, candidate.id, `users/${userId}/clips/${id}.mp4`,
     title, candidate.transcriptExcerpt, candidate.endSeconds - candidate.startSeconds,
