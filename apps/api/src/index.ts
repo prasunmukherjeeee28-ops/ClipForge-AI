@@ -454,7 +454,7 @@ app.post("/internal/processor/clip-uploads", async (c) => {
   }
 
   const clipId = existing?.id ?? uuid();
-  const objectKey = existing?.objectKey ?? \`clips/\${candidate.userId}/\${body.jobId}/\${clipId}.mp4\`;
+  const objectKey = existing?.objectKey ?? `clips/${candidate.userId}/${body.jobId}/${clipId}.mp4`;
   if (existing?.uploadId) {
     await c.env.MEDIA.resumeMultipartUpload(objectKey, existing.uploadId).abort().catch(() => undefined);
   }
