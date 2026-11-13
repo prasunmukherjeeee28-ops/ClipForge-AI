@@ -30,6 +30,9 @@ class Settings:
     stt_beam_size: int = 1
     stt_language: str | None = None
     stt_chunk_timeout_seconds: int = 1800
+    semantic_api_key: str | None = None
+    semantic_model: str = "gemini-3.8-flash"
+    semantic_timeout_seconds: float = 25.0
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -117,4 +120,7 @@ class Settings:
             stt_beam_size=bounded_int("PROCESSOR_STT_BEAM_SIZE", 1, 1, 5),
             stt_language=stt_language,
             stt_chunk_timeout_seconds=bounded_int("PROCESSOR_STT_CHUNK_TIMEOUT_SECONDS", 1800, 60, 3600),
+            semantic_api_key=os.environ.get("GEMINI_API_KEY") or None,
+            semantic_model=os.environ.get("PROCESSOR_SEMANTIC_MODEL", "gemini-3.8-flash").strip(),
+            semantic_timeout_seconds=bounded_float("PROCESSOR_SEMANTIC_TIMEOUT_SECONDS", 25.0, 2.0, 60.0),
         )

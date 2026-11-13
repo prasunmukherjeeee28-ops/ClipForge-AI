@@ -12,6 +12,8 @@ from .client import ProcessorClient
 from .config import Settings
 from .media import MediaProcessingError, extract_audio, probe_media
 from .moments import detect_moments
+from .moment_scoring import LocalHeuristicAdapter, MomentEvidence
+from .semantic_scoring import GeminiSemanticAdapter
 from .render import render_vertical_clip
 from .source_adapters import SourceInspectionError, inspect_video_url
 from .transcription_runner import run_transcription_process
@@ -44,7 +46,12 @@ def _select_render_candidates(candidates: list[dict[str, object]], limit: int = 
     return selected
 
 
-def _clip_title(transcript_path: Path, start_seconds: float, end_seconds: float, index: int) -> str:
+def _clip_title(transcript_path: Path, start_seconds: float, end_seconds: float, index: int, title_hint: str | None = None) -> str:
+    if isinstance(title_hint, str) and title_hint.strip():
+        clean_hint = re.sub(r"[\x00-\x1f\x7f]", " ", title_hint).strip()
+        clean_hint = " ".join(clean_hint.split())[:116].rstrip(" .!?")
+        if clean_hint:
+            return clean_hint
     try:
         payload = json.loads(transcript_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
@@ -72,6 +79,64 @@ def _clip_title(transcript_path: Path, start_seconds: float, end_seconds: float,
         sentence = re.split(r"(?<=[.!?])\s+", excerpt, maxsplit=1)[0]
         return sentence[:116].rstrip(" .!?") or f"Highlight {index}"
     return f"Gameplay highlight {index}"
+
+
+
+def _build_semantic_evidence(candidates: list[dict[str, object]], transcript_path: Path) -> list[MomentEvidence]:
+    """Attach only bounded candidate-local transcript excerpts to semantic evidence."""
+    try:
+        payload = json.loads(transcript_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        payload = {}
+    segments = payload.get("segments") if isinstance(payload, dict) else None
+    if not isinstance(segments, list):
+        segments = []
+
+    evidence: list[MomentEvidence] = []
+    for candidate in candidates:
+        try:
+            start = float(candidate["startSeconds"])
+            end = float(candidate["endSeconds"])
+            score = float(candidate["score"])
+            signals = candidate["signals"]
+            if not isinstance(signals, dict):
+                continue
+            excerpt_parts: list[str] = []
+            excerpt_length = 0
+            for segment in segments:
+                if not isinstance(segment, dict) or not isinstance(segment.get("text"), str):
+                    continue
+                try:
+                    segment_start = float(segment.get("start"))
+                    segment_end = float(segment.get("end"))
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if segment_end <= start or segment_start >= end:
+                    continue
+                text = " ".join(segment["text"].split())
+                if not text:
+                    continue
+                remaining = 1600 - excerpt_length
+                if remaining <= 0:
+                    break
+                excerpt_parts.append(text[:remaining])
+                excerpt_length += min(len(text), remaining) + 1
+            evidence.append(MomentEvidence(
+                start_seconds=start,
+                end_seconds=end,
+                heuristic_score=score,
+                acoustic_salience=float(signals["acousticSalience"]),
+                transcript_velocity=float(signals["transcriptVelocity"]),
+                narrative_arc=float(signals["narrativeArc"]),
+                novelty=float(signals["novelty"]),
+                word_count=int(candidate["wordCount"]),
+                marker_count=int(candidate["markerCount"]),
+                rationale=str(candidate.get("rationale") or "combined audio and transcript cues")[:500],
+                transcript_excerpt=" ".join(excerpt_parts)[:1600],
+            ))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+    return evidence
 
 
 class JobCancelled(Exception):
@@ -350,6 +415,43 @@ async def run_once() -> int:
                     f"clipforge:{job_id}:{item['startSeconds']:.3f}:{item['endSeconds']:.3f}",
                 ))
                 candidate_payload.append(item)
+
+            # Keep the deterministic detector as the safety net. Gemini receives only
+            # the top heuristic candidates and their bounded transcript excerpts.
+            semantic_evidence = _build_semantic_evidence(candidate_payload, Path(transcription["path"]))
+            semantic_results = LocalHeuristicAdapter().score(semantic_evidence)
+            if settings.semantic_api_key and semantic_evidence:
+                try:
+                    semantic_adapter = GeminiSemanticAdapter(
+                        settings.semantic_api_key,
+                        model=settings.semantic_model,
+                        timeout_seconds=settings.semantic_timeout_seconds,
+                    )
+                    semantic_results = await _with_lease(
+                        asyncio.to_thread(semantic_adapter.score, semantic_evidence),
+                        cancelled,
+                        lease_lost,
+                    )
+                    print("Gemini semantic refinement completed:", len(semantic_results))
+                except Exception as exc:
+                    # Provider outages, quota limits and malformed model output must not
+                    # fail an otherwise valid clip job or interrupt the active lease.
+                    print("Gemini semantic refinement unavailable; using local scores:", type(exc).__name__)
+
+            semantic_by_window = {
+                (round(result.start_seconds, 3), round(result.end_seconds, 3)): result
+                for result in semantic_results
+            }
+            for item in candidate_payload:
+                result = semantic_by_window.get((
+                    round(float(item["startSeconds"]), 3),
+                    round(float(item["endSeconds"]), 3),
+                ))
+                if result is not None:
+                    item["score"] = result.score
+                    item["rationale"] = f"{result.category}: {result.rationale}"[:500]
+                    if result.title_hint:
+                        item["titleHint"] = result.title_hint
             await _with_lease(
                 client.report_progress(job_id, lease_id, lease_token, "persisting_moments", 68),
                 cancelled,
@@ -385,7 +487,7 @@ async def run_once() -> int:
             for index, candidate in enumerate(selected, start=1):
                 start_seconds = float(candidate["startSeconds"])
                 end_seconds = float(candidate["endSeconds"])
-                title = _clip_title(Path(transcription["path"]), start_seconds, end_seconds, index)
+                title = _clip_title(Path(transcription["path"]), start_seconds, end_seconds, index, candidate.get("titleHint") if isinstance(candidate.get("titleHint"), str) else None)
                 output_path = clips_dir / f"clip-{index:02d}.mp4"
                 await _with_lease(
                     client.report_progress(

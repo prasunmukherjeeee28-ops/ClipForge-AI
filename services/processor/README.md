@@ -13,10 +13,10 @@ D1-backed single-job processor for private, creator-authorized VOD files. It ver
 - Uses FFmpeg to extract mono 16 kHz signed 16-bit PCM WAV audio.
 - Stores `audio.wav` and a `media.json` manifest in a private per-user/per-job scratch directory.
 - Runs CPU INT8 faster-whisper locally in bounded five-minute chunks, with voice-activity detection, word timestamps, and resumable per-chunk checkpoints.
-- Stores `transcript.json` and a verification summary in the same private per-user/per-job scratch directory. Transcript contents are not sent to Cloudflare or a third-party transcription API.
+- Stores `transcript.json` and a verification summary in the same private per-user/per-job scratch directory. Transcript contents are not sent to Cloudflare or a third-party transcription API for transcription.
 - Computes one-second RMS loudness and zero-crossing features from the normalized WAV without loading the full audio into memory.
 - Scans multi-scale 15–90 second windows using transcript word density, reaction phrases, speech coverage, acoustic changes and within-VOD phrase rarity; overlapping candidates are deduplicated with temporal IoU non-maximum suppression.
-- Uses a provider-neutral Pydantic scoring contract. The current local adapter is deterministic and makes no LLM calls, invented category labels or title suggestions.
+- Uses a provider-neutral Pydantic scoring contract. Deterministic local audio/transcript heuristics always run first. When `GEMINI_API_KEY` is explicitly configured, Gemini receives only the top 40 candidate-local transcript excerpts (maximum 1,600 characters each) and numeric features; source video/audio are never uploaded. It classifies likely funny/action/fail/glitch/banter moments, refines ranking, and can suggest a concise clip title. The final score blends 65% semantic score with 35% deterministic score; malformed output, quota errors and provider timeouts fall back to local scoring.
 - Persists media, transcript verification metadata and candidate rows in D1 while retaining the active lease for rendering.
 - Selects up to three high-scoring, non-overlapping candidates, renders 1080×1920 H.264/AAC clips with timestamped burned-in subtitles, and derives conservative titles from transcript excerpts.
 - Uploads each clip to private R2 through lease-scoped multipart endpoints, verifies the stored object size, and registers clip metadata in D1 before marking the job completed.
@@ -132,7 +132,7 @@ Each request uses a fresh random nonce. The Worker stores only its SHA-256 hash 
 
 1. Connect the existing dashboard, clip library, job-progress and editor screens to the new owner-scoped clip APIs; add in-app preview and explicit delete/retention controls.
 2. Finish connecting the editor to the generated clip media and add non-destructive trim controls that do not imply server-side re-rendering until that API exists.
-3. Improve titles and descriptions with an optional semantic adapter, keeping deterministic fallback behavior and no unverified claims.
+3. Benchmark the optional Gemini semantic adapter on an annotated GTA VI dataset; compare its classifications and ranking against human labels before relying on it for production.
 4. Add render QA (duration, codec, audio presence, subtitle timing and output decode checks) plus retry-safe cleanup for orphaned R2 multipart uploads.
 5. Benchmark candidate precision, recall, boundary accuracy and processor throughput on an annotated GTA VI VOD set before tuning scoring weights or adding acoustic models.
 6. Move intermediate audio/transcript artifacts to lifecycle-managed private storage and add automated retention/cleanup.

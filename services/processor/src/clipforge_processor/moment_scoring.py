@@ -9,7 +9,7 @@ MomentCategory = Literal["funny", "action", "fail", "glitch", "banter", "unknown
 
 
 class MomentEvidence(BaseModel):
-    """Bounded, provider-neutral evidence; raw transcript text is intentionally excluded."""
+    """Bounded evidence sent to a scoring adapter; transcript excerpts are opt-in."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -23,6 +23,7 @@ class MomentEvidence(BaseModel):
     word_count: int = Field(ge=0, le=10000)
     marker_count: int = Field(ge=0, le=1000)
     rationale: str = Field(min_length=1, max_length=500)
+    transcript_excerpt: str = Field(default="", max_length=1600)
 
     @model_validator(mode="after")
     def validate_window(self) -> "MomentEvidence":
@@ -32,7 +33,7 @@ class MomentEvidence(BaseModel):
 
 
 class HighlightScore(BaseModel):
-    """Validated structured output for a future optional semantic refinement model."""
+    """Validated structured output from a semantic or deterministic scorer."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
