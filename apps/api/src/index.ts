@@ -1338,21 +1338,73 @@ app.get("/api/clips", async (c) => {
 
 app.get("/api/clips/:clipId/preview", async (c) => {
   const clip = await c.env.DB.prepare(
-    "SELECT output_key AS outputKey, title FROM clips WHERE id = ?1 AND user_id = ?2 AND status = 'ready'",
-  ).bind(c.req.param("clipId"), c.get("user").id).first<{ outputKey: string; title: string }>();
+    "SELECT output_key AS outputKey FROM clips WHERE id = ?1 AND user_id = ?2 AND status = 'ready'",
+  ).bind(c.req.param("clipId"), c.get("user").id).first<{ outputKey: string }>();
   if (!clip) return jsonError(c, "Ready clip not found.", 404);
-  const object = await c.env.MEDIA.get(clip.outputKey);
+  const metadata = await c.env.MEDIA.head(clip.outputKey);
+  if (!metadata) return jsonError(c, "The rendered MP4 is not available in private storage.", 404);
+
+  const rangeHeader = c.req.header("Range");
+  let offset = 0;
+  let length = metadata.size;
+  let status: 200 | 206 = 200;
+  let contentRange: string | null = null;
+  if (rangeHeader) {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+    if (!match || metadata.size < 1 || (!match[1] && !match[2])) {
+      return new Response(null, {
+        status: 416,
+        headers: {
+          "Content-Range": `bytes */${metadata.size}`,
+          "Accept-Ranges": "bytes",
+          "Cache-Control": "private, no-store",
+        },
+      });
+    }
+    if (!match[1]) {
+      const suffixLength = Number(match[2]);
+      if (!Number.isSafeInteger(suffixLength) || suffixLength < 1) {
+        return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${metadata.size}` } });
+      }
+      length = Math.min(suffixLength, metadata.size);
+      offset = metadata.size - length;
+    } else {
+      offset = Number(match[1]);
+      const requestedEnd = match[2] ? Number(match[2]) : metadata.size - 1;
+      if (
+        !Number.isSafeInteger(offset) || !Number.isSafeInteger(requestedEnd) ||
+        offset < 0 || requestedEnd < offset || offset >= metadata.size
+      ) {
+        return new Response(null, {
+          status: 416,
+          headers: {
+            "Content-Range": `bytes */${metadata.size}`,
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "private, no-store",
+          },
+        });
+      }
+      length = Math.min(requestedEnd, metadata.size - 1) - offset + 1;
+    }
+    status = 206;
+    contentRange = `bytes ${offset}-${offset + length - 1}/${metadata.size}`;
+  }
+
+  const object = await c.env.MEDIA.get(
+    clip.outputKey,
+    status === 206 ? { range: { offset, length } } : undefined,
+  );
   if (!object) return jsonError(c, "The rendered MP4 is not available in private storage.", 404);
-  return new Response(object.body, {
-    status: 200,
-    headers: {
-      "Content-Type": "video/mp4",
-      "Content-Length": String(object.size),
-      "Content-Disposition": "inline",
-      "Cache-Control": "private, no-store",
-      "X-Content-Type-Options": "nosniff",
-    },
+  const headers = new Headers({
+    "Content-Type": "video/mp4",
+    "Content-Length": String(length),
+    "Content-Disposition": "inline",
+    "Accept-Ranges": "bytes",
+    "Cache-Control": "private, no-store",
+    "X-Content-Type-Options": "nosniff",
   });
+  if (contentRange) headers.set("Content-Range", contentRange);
+  return new Response(object.body, { status, headers });
 });
 
 app.get("/api/clips/:clipId/download", async (c) => {
