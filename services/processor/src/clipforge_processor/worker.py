@@ -5,10 +5,11 @@ import json
 
 from .client import ProcessorClient
 from .config import Settings
+from .source_adapters import SourceInspectionError, inspect_video_url
 
 
 async def run_once() -> int:
-    """Claim one mock job, verify its lease, then release it without media work."""
+    """Inspect one queued source using official metadata APIs; never scrape media pages."""
     settings = Settings.from_env()
     client = ProcessorClient(
         settings.api_base_url,
@@ -31,27 +32,59 @@ async def run_once() -> int:
         lease_id = lease["leaseId"]
         lease_token = lease["leaseToken"]
 
-        heartbeat = await client.heartbeat(job_id, lease_id, lease_token)
-        print("Heartbeat:", json.dumps(heartbeat, ensure_ascii=False))
-
-        if not heartbeat.get("cancelRequested", False):
-            await client.report_progress(
+        try:
+            metadata = await inspect_video_url(
+                job["sourceUrl"],
+                youtube_api_key=settings.youtube_data_api_key,
+                twitch_client_id=settings.twitch_client_id,
+                twitch_client_secret=settings.twitch_client_secret,
+            )
+            await client.report_source_metadata(
                 job_id,
                 lease_id,
                 lease_token,
-                stage="processor_connection_test",
-                progress=1,
+                source_id=metadata.source_id,
+                source_platform=metadata.platform,
+                source_type=metadata.source_type,
+                title=metadata.title,
+                duration_seconds=metadata.duration_seconds,
+                published_at=metadata.published_at,
             )
 
-        released = await client.release(job_id, lease_id, lease_token)
-        print(
-            "Mock job safely released:",
-            json.dumps(
-                {"jobId": job_id, "sourcePlatform": job.get("sourcePlatform"), "result": released},
-                ensure_ascii=False,
-            ),
-        )
-        return 0
+            if metadata.source_type == "live":
+                result = await client.fail(job_id, lease_id, lease_token, "live_source_not_supported")
+                outcome = "live_source_not_supported"
+            else:
+                # The job can only be claimed after a completed, user-owned
+                # source asset has been attached. Platform metadata alone
+                # never grants media access.
+                result = await client.mark_source_ready(job_id, lease_id, lease_token)
+                outcome = "source_ready"
+
+            print(
+                "Source inspection finished:",
+                json.dumps(
+                    {
+                        "jobId": job_id,
+                        "sourceAssetId": job.get("sourceAssetId"),
+                        "platform": metadata.platform,
+                        "sourceType": metadata.source_type,
+                        "durationSeconds": metadata.duration_seconds,
+                        "mediaAccess": metadata.media_access,
+                        "outcome": outcome,
+                        "result": result,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            return 0
+        except SourceInspectionError as exc:
+            result = await client.fail(job_id, lease_id, lease_token, exc.code)
+            print(
+                "Source inspection stopped:",
+                json.dumps({"jobId": job_id, "errorCode": exc.code, "result": result}, ensure_ascii=False),
+            )
+            return 0
     finally:
         await client.close()
 

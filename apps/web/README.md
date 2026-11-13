@@ -28,11 +28,23 @@ src/
 
 ## Backend integration status
 
-The Cloudflare Worker API (see `docs/API.md`) is not implemented yet. All
-screen content comes from clearly-marked fixtures in `src/lib/mock-data.ts`;
-domain types in `src/lib/types.ts` mirror the planned API contracts so real
-fetch calls can replace the mocks without reshaping feature code.
+The upload screen now uses the real authenticated API contract for:
+- Creating a URL job that waits for a creator-authorized source asset.
+- Uploading a local MP4, MOV, WebM or MKV file to private R2 with resumable 8 MiB multipart chunks.
+- Resuming already-confirmed parts, finalizing the private object and attaching it to the current user's job.
 
-Intentionally **not** simulated: real AI results, real video processing, real
-media playback (upload previews use a local object URL of your own file;
-editor/radar playback moves a cursor only).
+The API client uses relative `/api` paths by default. Set
+`VITE_CLIPFORGE_API_BASE_URL` at build time only when the API is mounted at a
+compatible origin. The current Worker does not configure cross-origin CORS, so
+the intended deployment is a same-origin API route protected by Cloudflare
+Access. Both user accounts must be separately allowlisted on the Access app.
+
+This is an ingestion stage, not a finished clipping pipeline. The processor
+currently verifies official YouTube/Twitch VOD metadata and moves an eligible
+job to `source_ready`; it does not yet read the R2 file, validate its contents
+with FFprobe, transcribe, detect moments, render clips, or produce downloads.
+Dashboard, library, editor and Live Radar screens still contain fixture data.
+Do not interpret sample dashboard/library entries as real user clips.
+
+Upload previews use a local object URL of the selected file. Editor/radar
+playback remains a UI placeholder until real clip media endpoints are added.

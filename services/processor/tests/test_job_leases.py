@@ -22,6 +22,8 @@ def make_db() -> sqlite3.Connection:
     db.executescript((ROOT / "database/migrations/0001_initial.sql").read_text())
     db.executescript((ROOT / "database/migrations/0002_processor_leases.sql").read_text())
     db.executescript((ROOT / "database/migrations/0003_processor_request_nonces.sql").read_text())
+    db.executescript((ROOT / "database/migrations/0004_source_metadata.sql").read_text())
+    db.executescript((ROOT / "database/migrations/0005_authorized_source_assets.sql").read_text())
     db.execute(
         "INSERT INTO users (id, auth_subject, email) VALUES ('user-1', 'subject-1', 'one@example.com')"
     )
@@ -155,6 +157,16 @@ def test_claim_update_returns_distinct_jobs_for_sequential_workers() -> None:
     db = make_db()
     db.execute("UPDATE jobs SET status = 'queued', lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL WHERE id = 'job-1'")
     add_user_and_job(db, "user-1", "job-2")
+    for asset_id, job_id in (("asset-1", "job-1"), ("asset-2", "job-2")):
+        db.execute(
+            """
+            INSERT INTO source_assets (
+                id, user_id, object_key, filename, content_type, size_bytes, status
+            ) VALUES (?, 'user-1', ?, 'source.mp4', 'video/mp4', 1024, 'ready')
+            """,
+            (asset_id, f"source-assets/user-1/{asset_id}/source"),
+        )
+        db.execute("UPDATE jobs SET source_asset_id = ? WHERE id = ?", (asset_id, job_id))
 
     claim_sql = api_sql_containing("UPDATE jobs SET status = 'processing'")
     first = db.execute(claim_sql, ("lease-1", "hash-1")).fetchone()
@@ -360,7 +372,7 @@ def test_cancel_all_query_only_marks_authenticated_users_jobs() -> None:
     add_user_and_job(db, "user-1", "own-queued-job")
     add_user_and_job(db, "user-2", "friend-queued-job")
     cancel_all_sql = api_sql_containing(
-        "WHERE user_id = ?1 AND status IN ('queued','processing')"
+        "WHERE user_id = ?1 AND (status IN ('queued','processing') OR (status = 'review' AND stage = 'awaiting_source_asset'))"
     )
     db.execute(cancel_all_sql, ("user-1",))
     states = {
