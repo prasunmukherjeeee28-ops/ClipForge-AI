@@ -26,6 +26,8 @@ def make_db() -> sqlite3.Connection:
     db.executescript((ROOT / "database/migrations/0005_authorized_source_assets.sql").read_text())
     db.executescript((ROOT / "database/migrations/0006_media_validation.sql").read_text())
     db.executescript((ROOT / "database/migrations/0007_transcription.sql").read_text())
+    db.executescript((ROOT / "database/migrations/0008_moment_candidates.sql").read_text())
+    db.executescript((ROOT / "database/migrations/0009_private_clip_storage.sql").read_text())
     db.execute(
         "INSERT INTO users (id, auth_subject, email) VALUES ('user-1', 'subject-1', 'one@example.com')"
     )
@@ -348,7 +350,7 @@ def test_completion_callback_cannot_override_cancellation() -> None:
 def test_job_detail_query_hides_another_users_job() -> None:
     db = make_db()
     add_user_and_job(db, "user-2", "friend-job")
-    detail_sql = api_sql_containing("WHERE id = ?1 AND user_id = ?2")
+    detail_sql = api_sql_containing("SELECT id, source_url AS sourceUrl")
     row = db.execute(detail_sql, ("friend-job", "user-1")).fetchone()
     assert row is None
 
@@ -364,7 +366,7 @@ def test_clip_list_query_hides_another_users_clips() -> None:
         "INSERT INTO clips (id, job_id, user_id, output_key, title) VALUES (?, ?, ?, ?, ?)",
         ("clip-friend", "friend-job", "user-2", "users/user-2/clips/clip-friend.mp4", "Friend"),
     )
-    clips_sql = api_sql_containing("FROM clips WHERE user_id = ?1")
+    clips_sql = api_sql_containing("SELECT id, job_id AS jobId, title, description")
     rows = db.execute(clips_sql, ("user-1",)).fetchall()
     assert {row["id"] for row in rows} == {"clip-owner"}
 
