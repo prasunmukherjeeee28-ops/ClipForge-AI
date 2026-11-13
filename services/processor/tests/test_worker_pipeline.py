@@ -154,3 +154,76 @@ def test_poll_loop_rejects_unbounded_or_zero_interval() -> None:
             raise AssertionError(f"poll interval {value} should have been rejected")
 
     asyncio.run(scenario())
+
+
+def test_semantic_refinement_does_not_swallow_lease_loss_or_cancellation(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    import pytest
+
+    settings = SimpleNamespace(
+        semantic_api_key="test-key",
+        semantic_model="test-model",
+        semantic_timeout_seconds=1,
+    )
+    evidence = [object()]
+    fallback = [object()]
+
+    monkeypatch.setattr(
+        worker_module.LocalHeuristicAdapter,
+        "score",
+        lambda self, items: fallback,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "GeminiSemanticAdapter",
+        lambda *args, **kwargs: SimpleNamespace(score=lambda items: []),
+    )
+
+    async def fail_with_lease_error(*args, **kwargs):
+        raise worker_module.LeaseLost("lease expired")
+
+    monkeypatch.setattr(worker_module, "_with_lease", fail_with_lease_error)
+
+    async def scenario() -> None:
+        for error in (
+            worker_module.LeaseLost("lease expired"),
+            worker_module.JobCancelled("cancelled"),
+        ):
+            async def raise_error(*args, _error=error, **kwargs):
+                raise _error
+
+            monkeypatch.setattr(worker_module, "_with_lease", raise_error)
+            with pytest.raises(type(error)):
+                await worker_module._score_semantic_candidates(
+                    settings, evidence, asyncio.Event(), asyncio.Event()
+                )
+
+    asyncio.run(scenario())
+
+
+def test_semantic_provider_failure_falls_back_to_local_scores(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    settings = SimpleNamespace(
+        semantic_api_key="test-key",
+        semantic_model="test-model",
+        semantic_timeout_seconds=1,
+    )
+    fallback = [object()]
+    monkeypatch.setattr(
+        worker_module.LocalHeuristicAdapter,
+        "score",
+        lambda self, items: fallback,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "GeminiSemanticAdapter",
+        lambda *args, **kwargs: SimpleNamespace(score=lambda items: (_ for _ in ()).throw(RuntimeError("provider down"))),
+    )
+
+    result = asyncio.run(worker_module._score_semantic_candidates(
+        settings, [object()], asyncio.Event(), asyncio.Event()
+    ))
+
+    assert result is fallback
