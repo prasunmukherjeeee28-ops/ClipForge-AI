@@ -316,7 +316,7 @@ app.post("/internal/processor/transcription-ready", async (c) => {
     transcriptModel?: string; transcriptLanguage?: string | null;
     transcriptSegmentCount?: number; transcriptSizeBytes?: number; transcriptSha256?: string;
     candidates?: Array<{
-      startSeconds?: number; endSeconds?: number; score?: number;
+      candidateId?: string; startSeconds?: number; endSeconds?: number; score?: number;
       signals?: { acousticSalience?: number; transcriptVelocity?: number; narrativeArc?: number; novelty?: number };
       wordCount?: number; markerCount?: number; rationale?: string;
     }>;
@@ -332,7 +332,8 @@ app.post("/internal/processor/transcription-ready", async (c) => {
     candidates.every((item) => {
       const signals = item?.signals;
       const boundedScore = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
-      return typeof item.startSeconds === "number" && Number.isFinite(item.startSeconds) && item.startSeconds >= 0 &&
+      return typeof item.candidateId === "string" && /^[a-f0-9-]{36}$/i.test(item.candidateId) &&
+        typeof item.startSeconds === "number" && Number.isFinite(item.startSeconds) && item.startSeconds >= 0 &&
         typeof item.endSeconds === "number" && Number.isFinite(item.endSeconds) && item.endSeconds > item.startSeconds &&
         boundedScore(item.score) && !!signals &&
         boundedScore(signals.acousticSalience) && boundedScore(signals.transcriptVelocity) &&
@@ -365,11 +366,8 @@ app.post("/internal/processor/transcription-ready", async (c) => {
   const leasePredicate = "id = ?1 AND lease_id = ?2 AND lease_token_hash = ?3 AND status = 'processing' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP AND source_type = 'video' AND source_asset_id IS NOT NULL AND EXISTS (SELECT 1 FROM source_assets WHERE source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id AND source_assets.status = 'ready')";
   const statements = [
     c.env.DB.prepare(
-      `DELETE FROM candidates WHERE job_id = ?1 AND EXISTS (SELECT 1 FROM jobs WHERE ${leasePredicate})`,
-    ).bind(body.jobId, body.leaseId, tokenHash),
-    c.env.DB.prepare(
       `INSERT INTO candidates (id, job_id, start_seconds, end_seconds, score, acoustic_salience, transcript_velocity, narrative_arc, novelty, word_count, marker_count, rationale)
-       SELECT lower(hex(randomblob(16))), jobs.id,
+       SELECT json_extract(candidate.value, '$.candidateId'), jobs.id,
          json_extract(candidate.value, '$.startSeconds'),
          json_extract(candidate.value, '$.endSeconds'),
          json_extract(candidate.value, '$.score'),
@@ -385,7 +383,12 @@ app.post("/internal/processor/transcription-ready", async (c) => {
          AND jobs.status = 'processing' AND jobs.cancel_requested = 0
          AND jobs.lease_expires_at > CURRENT_TIMESTAMP AND jobs.source_type = 'video'
          AND jobs.source_asset_id IS NOT NULL
-         AND EXISTS (SELECT 1 FROM source_assets WHERE source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id AND source_assets.status = 'ready')`,
+         AND EXISTS (SELECT 1 FROM source_assets WHERE source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id AND source_assets.status = 'ready')
+       ON CONFLICT(id) DO UPDATE SET start_seconds = excluded.start_seconds, end_seconds = excluded.end_seconds,
+         score = excluded.score, acoustic_salience = excluded.acoustic_salience,
+         transcript_velocity = excluded.transcript_velocity, narrative_arc = excluded.narrative_arc,
+         novelty = excluded.novelty, word_count = excluded.word_count, marker_count = excluded.marker_count,
+         rationale = excluded.rationale`,
     ).bind(body.jobId, body.leaseId, tokenHash, JSON.stringify(candidates)),
     c.env.DB.prepare(
       "UPDATE jobs SET media_container = ?1, media_video_codec = ?2, media_source_audio_codec = ?3, media_width = ?4, media_height = ?5, media_duration_seconds = ?6, audio_codec = ?7, audio_sample_rate = ?8, audio_channels = ?9, audio_size_bytes = ?10, media_verified_at = CURRENT_TIMESTAMP, transcript_model = ?11, transcript_language = ?12, transcript_segment_count = ?13, transcript_size_bytes = ?14, transcript_sha256 = ?15, transcript_verified_at = CURRENT_TIMESTAMP, status = 'processing', stage = 'rendering_clips', progress = 72, error_code = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?16 AND lease_id = ?17 AND lease_token_hash = ?18 AND status = 'processing' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP AND source_type = 'video' AND source_asset_id IS NOT NULL AND EXISTS (SELECT 1 FROM source_assets WHERE source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id AND source_assets.status = 'ready') RETURNING status",
