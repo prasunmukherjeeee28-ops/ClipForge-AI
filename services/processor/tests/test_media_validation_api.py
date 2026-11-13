@@ -26,6 +26,7 @@ def make_db() -> sqlite3.Connection:
         "0004_source_metadata.sql",
         "0005_authorized_source_assets.sql",
         "0006_media_validation.sql",
+        "0007_transcription.sql",
     ):
         db.executescript((ROOT / "database/migrations" / migration).read_text())
     db.executemany(
@@ -164,3 +165,53 @@ def test_media_ready_callback_rejects_stale_expired_cancelled_and_wrong_asset() 
 
     for job_id in ("stale", "expired", "cancelled", "wrong-owner"):
         assert db.execute(sql, media_ready_values(job_id)).fetchone() is None
+
+
+def transcription_ready_sql() -> str:
+    return route_sql("/internal/processor/transcription-ready", "UPDATE")
+
+
+def transcription_ready_values(job_id: str = "job-1") -> tuple[object, ...]:
+    return (
+        "mov,mp4,m4a", "h264", "aac", 1920, 1080, 125.5,
+        "pcm_s16le", 16000, 1, 4_000_044,
+        "base", "en", 42, 12_345, "a" * 64,
+        job_id, "lease-1", "hash-1",
+    )
+
+
+def test_transcription_ready_persists_media_and_transcript_metadata() -> None:
+    db = make_db()
+    add_asset(db, "asset-1", "user-1")
+    add_job(db, "job-1", "user-1", "asset-1")
+    result = db.execute(transcription_ready_sql(), transcription_ready_values()).fetchone()
+    assert result is not None
+    assert result["status"] == "review"
+    row = db.execute(
+        """
+        SELECT stage, progress, media_container, audio_size_bytes,
+               transcript_model, transcript_language, transcript_segment_count,
+               transcript_size_bytes, transcript_sha256, lease_id
+        FROM jobs WHERE id = 'job-1'
+        """
+    ).fetchone()
+    assert tuple(row) == (
+        "transcribed", 60, "mov,mp4,m4a", 4_000_044,
+        "base", "en", 42, 12_345, "a" * 64, None,
+    )
+
+
+def test_transcription_ready_rejects_stale_expired_cancelled_and_wrong_owner() -> None:
+    db = make_db()
+    add_asset(db, "asset-stale", "user-1")
+    add_asset(db, "asset-expired", "user-1")
+    add_asset(db, "asset-cancelled", "user-1")
+    add_asset(db, "friend-asset", "user-2")
+    add_job(db, "stale", "user-1", "asset-stale", lease_id="new-lease")
+    add_job(db, "expired", "user-1", "asset-expired", lease_expiry="2000-01-01 00:00:00")
+    add_job(db, "cancelled", "user-1", "asset-cancelled", cancel_requested=1)
+    add_job(db, "wrong-owner", "user-1", "friend-asset")
+    sql = transcription_ready_sql()
+
+    for job_id in ("stale", "expired", "cancelled", "wrong-owner"):
+        assert db.execute(sql, transcription_ready_values(job_id)).fetchone() is None
