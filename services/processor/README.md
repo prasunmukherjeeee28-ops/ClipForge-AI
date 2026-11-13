@@ -1,6 +1,6 @@
 # ClipForge Python Processor
 
-D1-backed single-job processor for private, creator-authorized VOD files. It verifies official YouTube/Twitch metadata, streams the attached private R2 source through a lease-scoped endpoint, validates media, extracts normalized audio, creates a local timestamped speech transcript, and builds an explainable shortlist of candidate moments from audio and transcript signals. It is not yet a clip generator.
+D1-backed single-job processor for private, creator-authorized VOD files. It verifies official YouTube/Twitch metadata, streams the attached private R2 source through a lease-scoped endpoint, validates media, extracts normalized audio, transcribes locally, scores candidate moments, renders up to three 9:16 clips, and stores verified exports in private R2 before completing the job.
 
 ## Current capabilities
 
@@ -17,8 +17,11 @@ D1-backed single-job processor for private, creator-authorized VOD files. It ver
 - Computes one-second RMS loudness and zero-crossing features from the normalized WAV without loading the full audio into memory.
 - Scans multi-scale 15–90 second windows using transcript word density, reaction phrases, speech coverage, acoustic changes and within-VOD phrase rarity; overlapping candidates are deduplicated with temporal IoU non-maximum suppression.
 - Uses a provider-neutral Pydantic scoring contract. The current local adapter is deterministic and makes no LLM calls, invented category labels or title suggestions.
-- Reports media and transcript verification metadata to D1 and moves a successful job to `review` / `transcribed`.
-- Renews the 90-second lease every 25 seconds and stops work when cancellation or lease loss is detected.
+- Persists media, transcript verification metadata and candidate rows in D1 while retaining the active lease for rendering.
+- Selects up to three high-scoring, non-overlapping candidates, renders 1080×1920 H.264/AAC clips with timestamped burned-in subtitles, and derives conservative titles from transcript excerpts.
+- Uploads each clip to private R2 through lease-scoped multipart endpoints, verifies the stored object size, and registers clip metadata in D1 before marking the job completed.
+- Serves clips only through authenticated, owner-scoped API download responses; bucket objects remain private.
+- Renews the 90-second lease every 25 seconds and stops work when cancellation or lease loss is detected, including terminating an active FFmpeg render.
 
 The user must upload an original/export or another provider-approved file they have permission to process. A public YouTube or Twitch URL and official metadata do not prove permission to process a media file. The worker does not scrape platform pages, bypass access controls or download video bytes from YouTube/Twitch.
 
@@ -26,7 +29,7 @@ The user must upload an original/export or another provider-approved file they h
 
 - Python 3.11+
 - FFmpeg and FFprobe installed on the processor host and available on PATH, or configured using `FFMPEG_BINARY` and `FFPROBE_BINARY`.
-- A deployed Worker with migrations `0001_initial.sql` through `0007_transcription.sql` applied.
+- A deployed Worker with migrations `0001_initial.sql` through `0009_private_clip_storage.sql` applied.
 - Cloudflare Access configured for the two intended users.
 - Worker secret `PROCESSOR_SHARED_SECRET` set to a random value of at least 32 characters and supplied to the processor environment. Never commit it.
 - Persistent, access-restricted volumes mounted at `PROCESSOR_SCRATCH_DIR` and `PROCESSOR_STT_MODEL_CACHE_DIR`. Audio and transcript artifacts remain on the trusted processor host; the model cache avoids downloading weights for every job. The model is downloaded from its model registry on first use, so allow outbound HTTPS during initial setup or pre-populate the cache before running jobs.
@@ -103,11 +106,13 @@ Do not run multiple copies of this one-job worker simultaneously. The worker han
 5. The Python processor claims the job under a short-lived D1 lease and verifies official platform metadata.
 6. The processor requests the attached source from the signed internal endpoint. The Worker validates the current lease and owner match, then streams the private R2 body directly without buffering the full file in Worker memory.
 7. FFprobe validates the actual local file. FFmpeg extracts the first audio stream into mono 16 kHz PCM WAV.
-8. The processor writes `audio.wav` and `media.json` under `<scratch>/users/<user-uuid>/<job-uuid>/`, removes the temporary downloaded source, then runs local speech recognition in an isolated child process. Five-minute chunks are checkpointed atomically so an expired lease or process restart can resume completed chunks.
+8. The processor writes `audio.wav` and `media.json` under `<scratch>/users/<user-uuid>/<job-uuid>/`, retaining the downloaded source until clip rendering and private R2 upload finish. It then runs local speech recognition in an isolated child process. Five-minute chunks are checkpointed atomically so an expired lease or process restart can resume completed chunks.
 9. The processor writes `transcript.json` with absolute segment and word timestamps, language metadata, and a SHA-256 digest. Only transcript verification metadata is sent to D1; audio and transcript text remain on private processor storage. The job moves to `review` / `transcribed`.
-10. The local moment-analysis module reads the retained WAV and transcript, calculates lightweight one-second audio features, scores overlapping multi-scale candidate windows, and applies IoU-based NMS. It writes no D1 rows or R2 objects yet; candidate persistence and UI review are the next integration step.
+10. The local moment-analysis module reads the WAV and transcript, calculates lightweight one-second audio features, scores overlapping multi-scale candidate windows, and applies IoU-based NMS. The Worker persists candidate metadata while keeping the same processor lease active.
+11. The processor chooses up to three non-overlapping candidates, renders vertical MP4s with synchronized SRT captions, uploads them in 8 MiB multipart chunks to owner-scoped private R2 keys, and verifies each completed object.
+12. A final lease-checked callback atomically registers the stored clips in D1 and completes the job. The authenticated `/api/clips` list is owner-scoped; `/api/clips/:clipId/download` streams only the current user's private object.
 
-Audio and transcript artifacts are not yet copied to R2. Keep processor volumes persistent and private until moment detection consumes them. Configure encryption-at-rest, backup and retention at the host/storage layer. Automated intermediate-artifact cleanup is a later task.
+The source video is deleted from processor scratch only after successful clip registration. Audio and transcript artifacts remain on the private persistent processor volume for now; configure encryption-at-rest, backup and retention at the host/storage layer. Automated intermediate-artifact cleanup and artifact lifecycle management remain follow-up work.
 
 ## Request signing
 
@@ -125,18 +130,18 @@ Each request uses a fresh random nonce. The Worker stores only its SHA-256 hash 
 
 ## Next implementation steps
 
-1. Persist owner-scoped moment candidates in D1, connect candidate progress to the job lifecycle, and add review UI/API integration.
-2. Add optional provider adapters for semantic payoff verification only after local heuristic quality is measured; benchmark acoustic event detection before adding a model such as YAMNet.
-3. Add FFmpeg 9:16 rendering, subtitle burn-in, private clip storage and idempotent clip registration.
-4. Move intermediate audio, transcripts and candidate artifacts to lifecycle-managed private R2 storage and add automated retention/cleanup.
-5. Connect the remaining dashboard, library, editor and job-progress screens to real API data.
-6. Add live-stream processing after the VOD pipeline is stable.
+1. Connect the existing dashboard, clip library, job-progress and editor screens to the new owner-scoped clip APIs; add in-app preview and explicit delete/retention controls.
+2. Improve titles and descriptions with an optional semantic adapter, keeping deterministic fallback behavior and no unverified claims.
+3. Add render QA (duration, codec, audio presence, subtitle timing and output decode checks) plus retry-safe cleanup for orphaned R2 multipart uploads.
+4. Benchmark candidate precision, recall, boundary accuracy and processor throughput on an annotated GTA VI VOD set before tuning scoring weights or adding acoustic models.
+5. Move intermediate audio/transcript artifacts to lifecycle-managed private storage and add automated retention/cleanup.
+6. Add live-stream processing only after the VOD pipeline is stable.
 
 The code and tests do not prove that a live Cloudflare account, R2 bucket or production processor host is configured correctly. No Cloudflare resources are created or deployed by these changes.
 
 
 ## Vertical clip rendering
 
-The `clipforge_processor.render.render_vertical_clip` function renders an authorized local source segment into a 1080×1920 H.264/AAC MP4. Landscape footage is contained in the vertical canvas over a blurred background, preserving the full gameplay frame and HUD instead of center-cropping the action. Timestamped transcript segments are clipped to the selected interval and emitted as an SRT subtitle track burned into the output.
+The `clipforge_processor.render.render_vertical_clip` function renders an authorized local source segment into a 1080×1920 H.264/AAC MP4. The worker now invokes it under the active job lease and uploads the result to private R2. Landscape footage is contained in the vertical canvas over a blurred background, preserving the full gameplay frame and HUD instead of center-cropping the action. Timestamped transcript segments are clipped to the selected interval and emitted as an SRT subtitle track burned into the output.
 
 Rendering uses an FFmpeg argument array (no shell), private temporary files, a bounded duration, timeout, thread count and output-size limit. The renderer is currently a tested processing primitive; orchestration, R2 upload/registration, and the app's clip review/download workflow are separate integration steps.
