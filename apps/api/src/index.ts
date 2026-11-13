@@ -299,6 +299,53 @@ app.post("/internal/processor/media-ready", async (c) => {
   return c.json({ ok: true, mediaReady: true, stage: "audio_extracted" });
 });
 
+app.post("/internal/processor/transcription-ready", async (c) => {
+  const body = parseProcessorBody<{
+    jobId?: string; leaseId?: string; leaseToken?: string;
+    container?: string; videoCodec?: string; sourceAudioCodec?: string;
+    width?: number; height?: number; durationSeconds?: number;
+    audioCodec?: string; audioSampleRate?: number; audioChannels?: number; audioSizeBytes?: number;
+    transcriptModel?: string; transcriptLanguage?: string | null;
+    transcriptSegmentCount?: number; transcriptSizeBytes?: number; transcriptSha256?: string;
+  }>(c);
+  const boundedName = (value: unknown, max: number) =>
+    typeof value === "string" && value.length > 0 && value.length <= max && /^[A-Za-z0-9,._+-]+$/.test(value);
+  const supportedModels = new Set(["tiny", "base", "small", "medium", "large-v3", "large-v3-turbo", "distil-large-v3"]);
+  const validLanguage = body?.transcriptLanguage === null ||
+    (typeof body?.transcriptLanguage === "string" &&
+      /^[a-z]{2,3}(?:-[a-z0-9]{2,8})?$/.test(body.transcriptLanguage));
+  if (
+    !body?.jobId || !body.leaseId || !body.leaseToken ||
+    !boundedName(body.container, 100) ||
+    !boundedName(body.videoCodec, 50) ||
+    !boundedName(body.sourceAudioCodec, 50) ||
+    body.audioCodec !== "pcm_s16le" || body.audioSampleRate !== 16000 || body.audioChannels !== 1 ||
+    !Number.isInteger(body.width) || body.width! < 1 || body.width! > 7680 ||
+    !Number.isInteger(body.height) || body.height! < 1 || body.height! > 4320 ||
+    typeof body.durationSeconds !== "number" || !Number.isFinite(body.durationSeconds) || body.durationSeconds <= 0 || body.durationSeconds > 43200 ||
+    !Number.isSafeInteger(body.audioSizeBytes) || body.audioSizeBytes! < 44 || body.audioSizeBytes! > 1500000000 ||
+    typeof body.transcriptModel !== "string" || !supportedModels.has(body.transcriptModel) ||
+    !validLanguage ||
+    !Number.isInteger(body.transcriptSegmentCount) || body.transcriptSegmentCount! < 0 || body.transcriptSegmentCount! > 500000 ||
+    !Number.isSafeInteger(body.transcriptSizeBytes) || body.transcriptSizeBytes! < 2 || body.transcriptSizeBytes! > 100000000 ||
+    typeof body.transcriptSha256 !== "string" || !/^[a-f0-9]{64}$/.test(body.transcriptSha256)
+  ) {
+    return jsonError(c, "Invalid media or transcript verification result.", 400);
+  }
+
+  const tokenHash = await sha256Hex(body.leaseToken);
+  const job = await c.env.DB.prepare(
+    "UPDATE jobs SET media_container = ?1, media_video_codec = ?2, media_source_audio_codec = ?3, media_width = ?4, media_height = ?5, media_duration_seconds = ?6, audio_codec = ?7, audio_sample_rate = ?8, audio_channels = ?9, audio_size_bytes = ?10, media_verified_at = CURRENT_TIMESTAMP, transcript_model = ?11, transcript_language = ?12, transcript_segment_count = ?13, transcript_size_bytes = ?14, transcript_sha256 = ?15, transcript_verified_at = CURRENT_TIMESTAMP, status = 'review', stage = 'transcribed', progress = MAX(progress, 60), error_code = NULL, lease_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?16 AND lease_id = ?17 AND lease_token_hash = ?18 AND status = 'processing' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP AND source_type = 'video' AND source_asset_id IS NOT NULL AND EXISTS (SELECT 1 FROM source_assets WHERE source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id AND source_assets.status = 'ready') RETURNING status",
+  ).bind(
+    body.container, body.videoCodec, body.sourceAudioCodec, body.width, body.height,
+    body.durationSeconds, body.audioCodec, body.audioSampleRate, body.audioChannels,
+    body.audioSizeBytes, body.transcriptModel, body.transcriptLanguage, body.transcriptSegmentCount,
+    body.transcriptSizeBytes, body.transcriptSha256, body.jobId, body.leaseId, tokenHash,
+  ).first<{ status: "review" }>();
+  if (!job) return jsonError(c, "Lease is invalid, expired, cancelled, or no ready owner-matched source asset is attached.", 409);
+  return c.json({ ok: true, mediaReady: true, transcriptionReady: true, stage: "transcribed" });
+});
+
 app.post("/internal/processor/source-ready", async (c) => {
   const body = parseProcessorBody<{ jobId?: string; leaseId?: string; leaseToken?: string }>(c);
   if (!body?.jobId || !body.leaseId || !body.leaseToken) {
@@ -748,7 +795,7 @@ app.get("/api/jobs", async (c) => {
   const requestedLimit = Number(c.req.query("limit") ?? 50);
   const limit = Math.min(Math.max(Number.isFinite(requestedLimit) ? Math.trunc(requestedLimit) : 50, 1), 100);
   const result = await c.env.DB.prepare(
-    "SELECT id, source_url AS sourceUrl, source_platform AS sourcePlatform, source_type AS sourceType, source_id AS sourceId, source_duration_seconds AS sourceDurationSeconds, source_published_at AS sourcePublishedAt, source_verified_at AS sourceVerifiedAt, source_asset_id AS sourceAssetId, media_container AS mediaContainer, media_video_codec AS mediaVideoCodec, media_source_audio_codec AS mediaSourceAudioCodec, media_width AS mediaWidth, media_height AS mediaHeight, media_duration_seconds AS mediaDurationSeconds, audio_codec AS audioCodec, audio_sample_rate AS audioSampleRate, audio_channels AS audioChannels, audio_size_bytes AS audioSizeBytes, media_verified_at AS mediaVerifiedAt, title, status, progress, stage, error_code AS errorCode, created_at AS createdAt, updated_at AS updatedAt FROM jobs WHERE user_id = ?1 ORDER BY created_at DESC LIMIT ?2",
+    "SELECT id, source_url AS sourceUrl, source_platform AS sourcePlatform, source_type AS sourceType, source_id AS sourceId, source_duration_seconds AS sourceDurationSeconds, source_published_at AS sourcePublishedAt, source_verified_at AS sourceVerifiedAt, source_asset_id AS sourceAssetId, media_container AS mediaContainer, media_video_codec AS mediaVideoCodec, media_source_audio_codec AS mediaSourceAudioCodec, media_width AS mediaWidth, media_height AS mediaHeight, media_duration_seconds AS mediaDurationSeconds, audio_codec AS audioCodec, audio_sample_rate AS audioSampleRate, audio_channels AS audioChannels, audio_size_bytes AS audioSizeBytes, media_verified_at AS mediaVerifiedAt, transcript_model AS transcriptModel, transcript_language AS transcriptLanguage, transcript_segment_count AS transcriptSegmentCount, transcript_size_bytes AS transcriptSizeBytes, transcript_sha256 AS transcriptSha256, transcript_verified_at AS transcriptVerifiedAt, title, status, progress, stage, error_code AS errorCode, created_at AS createdAt, updated_at AS updatedAt FROM jobs WHERE user_id = ?1 ORDER BY created_at DESC LIMIT ?2",
   )
     .bind(user.id, limit)
     .all();
@@ -757,7 +804,7 @@ app.get("/api/jobs", async (c) => {
 
 app.get("/api/jobs/:jobId", async (c) => {
   const job = await c.env.DB.prepare(
-    "SELECT id, source_url AS sourceUrl, source_platform AS sourcePlatform, source_type AS sourceType, source_id AS sourceId, source_duration_seconds AS sourceDurationSeconds, source_published_at AS sourcePublishedAt, source_verified_at AS sourceVerifiedAt, source_asset_id AS sourceAssetId, media_container AS mediaContainer, media_video_codec AS mediaVideoCodec, media_source_audio_codec AS mediaSourceAudioCodec, media_width AS mediaWidth, media_height AS mediaHeight, media_duration_seconds AS mediaDurationSeconds, audio_codec AS audioCodec, audio_sample_rate AS audioSampleRate, audio_channels AS audioChannels, audio_size_bytes AS audioSizeBytes, media_verified_at AS mediaVerifiedAt, title, status, progress, stage, error_code AS errorCode, created_at AS createdAt, updated_at AS updatedAt FROM jobs WHERE id = ?1 AND user_id = ?2",
+    "SELECT id, source_url AS sourceUrl, source_platform AS sourcePlatform, source_type AS sourceType, source_id AS sourceId, source_duration_seconds AS sourceDurationSeconds, source_published_at AS sourcePublishedAt, source_verified_at AS sourceVerifiedAt, source_asset_id AS sourceAssetId, media_container AS mediaContainer, media_video_codec AS mediaVideoCodec, media_source_audio_codec AS mediaSourceAudioCodec, media_width AS mediaWidth, media_height AS mediaHeight, media_duration_seconds AS mediaDurationSeconds, audio_codec AS audioCodec, audio_sample_rate AS audioSampleRate, audio_channels AS audioChannels, audio_size_bytes AS audioSizeBytes, media_verified_at AS mediaVerifiedAt, transcript_model AS transcriptModel, transcript_language AS transcriptLanguage, transcript_segment_count AS transcriptSegmentCount, transcript_size_bytes AS transcriptSizeBytes, transcript_sha256 AS transcriptSha256, transcript_verified_at AS transcriptVerifiedAt, title, status, progress, stage, error_code AS errorCode, created_at AS createdAt, updated_at AS updatedAt FROM jobs WHERE id = ?1 AND user_id = ?2",
   )
     .bind(c.req.param("jobId"), c.get("user").id)
     .first();
