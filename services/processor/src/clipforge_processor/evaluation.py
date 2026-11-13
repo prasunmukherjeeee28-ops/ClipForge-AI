@@ -29,8 +29,7 @@ def _window(item: Any, index: int, kind: str) -> dict[str, float]:
     end = _number(item.get("endSeconds", item.get("end_seconds", item.get("end"))), f"{kind}[{index}].endSeconds")
     if start < 0 or end <= start:
         raise EvaluationInputError(f"{kind}[{index}] must have 0 <= startSeconds < endSeconds")
-    score_value = item.get("score", 0)
-    score = _number(score_value, f"{kind}[{index}].score")
+    score = _number(item.get("score", 0), f"{kind}[{index}].score")
     return {"start": start, "end": end, "score": score}
 
 
@@ -65,40 +64,60 @@ def evaluate_windows(
     ranked = sorted(predictions, key=lambda item: (-item["score"], item["start"], item["end"]))
     selected = ranked[:k]
 
-    # Count duplicate predictions as selected windows that overlap another selected
-    # prediction above the threshold. Ground-truth matching remains one-to-one.
     duplicate_indices: set[int] = set()
     for left_index, left in enumerate(selected):
         for right_index in range(left_index + 1, len(selected)):
             if temporal_iou(left, selected[right_index]) >= iou_threshold:
                 duplicate_indices.update((left_index, right_index))
 
-    possible_matches = sorted(
+    # Build threshold-qualified edges, preferring higher-IoU labels per prediction.
+    # Augmenting paths preserve maximum match cardinality; a greedy global edge
+    # sort can incorrectly leave a prediction unmatched when reassignment is possible.
+    adjacency = [
+        sorted(
+            (
+                (temporal_iou(prediction, label), label_index)
+                for label_index, label in enumerate(labels)
+                if temporal_iou(prediction, label) >= iou_threshold
+            ),
+            key=lambda pair: (-pair[0], pair[1]),
+        )
+        for prediction in selected
+    ]
+    label_to_prediction: dict[int, int] = {}
+
+    def assign(prediction_index: int, visited_labels: set[int]) -> bool:
+        for _, label_index in adjacency[prediction_index]:
+            if label_index in visited_labels:
+                continue
+            visited_labels.add(label_index)
+            previous = label_to_prediction.get(label_index)
+            if previous is None or assign(previous, visited_labels):
+                label_to_prediction[label_index] = prediction_index
+                return True
+        return False
+
+    for prediction_index in range(len(selected)):
+        assign(prediction_index, set())
+
+    matches = sorted(
         (
-            (temporal_iou(prediction, label), prediction_index, label_index)
-            for prediction_index, prediction in enumerate(selected)
-            for label_index, label in enumerate(labels)
-            if temporal_iou(prediction, label) >= iou_threshold
+            (prediction_index, label_index)
+            for label_index, prediction_index in label_to_prediction.items()
         ),
-        reverse=True,
+        key=lambda pair: pair[0],
     )
-    matched_predictions: set[int] = set()
-    matched_labels: set[int] = set()
     boundary_errors: list[dict[str, float]] = []
-    for overlap, prediction_index, label_index in possible_matches:
-        if prediction_index in matched_predictions or label_index in matched_labels:
-            continue
+    for prediction_index, label_index in matches:
         prediction = selected[prediction_index]
         label = labels[label_index]
-        matched_predictions.add(prediction_index)
-        matched_labels.add(label_index)
         boundary_errors.append({
             "startSeconds": abs(prediction["start"] - label["start"]),
             "endSeconds": abs(prediction["end"] - label["end"]),
-            "temporalIoU": overlap,
+            "temporalIoU": temporal_iou(prediction, label),
         })
 
-    matched_count = len(matched_predictions)
+    matched_count = len(matches)
     boundary_values = [
         error
         for item in boundary_errors
