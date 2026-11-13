@@ -7,7 +7,9 @@ vi.mock("jose", () => ({
       ? { sub: "access-alice", email: "alice@example.test" }
       : token === "bob-token"
         ? { sub: "access-bob", email: "bob@example.test" }
-        : null;
+        : token === "eve-token"
+          ? { sub: "access-eve", email: "eve@example.test" }
+          : null;
     if (!identity) throw new Error("invalid test token");
     return { payload: identity };
   }),
@@ -91,10 +93,17 @@ const env = {
   ALLOWED_EMAILS: "alice@example.test,bob@example.test",
 };
 
-async function request(path: string, token: "alice-token" | "bob-token") {
-  return worker.fetch(new Request(`https://clipforge.test${path}`, {
-    headers: { "Cf-Access-Jwt-Assertion": token },
-  }), env as never, {} as never);
+async function request(
+  path: string,
+  token: "alice-token" | "bob-token" | "eve-token" | null,
+  overrides: Partial<typeof env> = {},
+) {
+  const headers = token ? { "Cf-Access-Jwt-Assertion": token } : {};
+  return worker.fetch(
+    new Request(`https://clipforge.test${path}`, { headers }),
+    { ...env, ...overrides } as never,
+    {} as never,
+  );
 }
 
 beforeEach(() => {
@@ -140,5 +149,34 @@ describe("two-account data isolation", () => {
     for (const path of ["/api/clips/clip-alice/preview", "/api/clips/clip-alice/download"]) {
       expect((await request(path, "bob-token")).status).toBe(404);
     }
+  });
+});
+
+describe("Cloudflare Access fail-closed behavior", () => {
+  it("rejects a valid Access identity that is not one of the two allowed accounts", async () => {
+    const response = await request("/api/jobs", "eve-token");
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({
+      error: { message: "This account is not authorized to use ClipForge." },
+    });
+  });
+
+  it("rejects requests without a Cloudflare Access JWT", async () => {
+    const response = await request("/api/jobs", null);
+    expect(response.status).toBe(401);
+  });
+
+  it("fails closed when the Access team domain is still a placeholder", async () => {
+    const response = await request("/api/jobs", "alice-token", {
+      ACCESS_TEAM_DOMAIN: "YOUR_TEAM.cloudflareaccess.com",
+    });
+    expect(response.status).toBe(503);
+  });
+
+  it("fails closed unless exactly two account emails are configured", async () => {
+    const response = await request("/api/jobs", "alice-token", {
+      ALLOWED_EMAILS: "alice@example.test",
+    });
+    expect(response.status).toBe(503);
   });
 });
