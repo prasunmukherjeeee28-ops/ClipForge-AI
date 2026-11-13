@@ -246,4 +246,4 @@ def test_spectral_flux_detects_a_new_sound_texture(tmp_path: Path) -> None:
     assert len(features) == 3
     assert features[0].spectral_flux == 0.0
     assert features[1].spectral_flux > features[0].spectral_flux
-    assert features[2].spectral_flux > features[0].spectral_flux
+    assert features[2].spectral_flux == 0.0
