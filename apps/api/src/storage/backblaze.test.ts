@@ -38,6 +38,20 @@ describe("BackblazeBucket object operations", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects dot path segments before URL normalization can change the object key", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const bucket = new BackblazeBucket(config);
+
+    await expect(bucket.head("clips/../private.mp4")).rejects.toThrow(/dot path segments/);
+    await expect(bucket.get("clips/./private.mp4")).rejects.toThrow(/dot path segments/);
+    await expect(bucket.head("clips/%2e%2e/private.mp4")).resolves.toEqual({
+      size: 123,
+      etag: '"safe"',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("treats missing objects as absent", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 404 })));
     await expect(new BackblazeBucket(config).head("missing.mp4")).resolves.toBeNull();
