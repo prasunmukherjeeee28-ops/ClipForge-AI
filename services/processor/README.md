@@ -107,7 +107,7 @@ Do not run multiple copies of this one-job worker simultaneously. The worker han
 6. The processor requests the attached source from the signed internal endpoint. The Worker validates the current lease and owner match, then streams the private R2 body directly without buffering the full file in Worker memory.
 7. FFprobe validates the actual local file. FFmpeg extracts the first audio stream into mono 16 kHz PCM WAV.
 8. The processor writes `audio.wav` and `media.json` under `<scratch>/users/<user-uuid>/<job-uuid>/`, retaining the downloaded source until clip rendering and private R2 upload finish. It then runs local speech recognition in an isolated child process. Five-minute chunks are checkpointed atomically so an expired lease or process restart can resume completed chunks.
-9. The processor writes `transcript.json` with absolute segment and word timestamps, language metadata, and a SHA-256 digest. Only transcript verification metadata is sent to D1; audio and transcript text remain on private processor storage. The job moves to `review` / `transcribed`.
+9. The processor writes `transcript.json` with absolute segment and word timestamps, language metadata, and a SHA-256 digest. Only transcript verification metadata and scored candidate metadata are sent to D1; audio and transcript text remain on private processor storage. The same active lease continues into rendering and private clip upload; the job is completed only after stored clips are registered.
 10. The local moment-analysis module reads the WAV and transcript, calculates lightweight one-second audio features, scores overlapping multi-scale candidate windows, and applies IoU-based NMS. The Worker persists candidate metadata while keeping the same processor lease active.
 11. The processor chooses up to three non-overlapping candidates, renders vertical MP4s with synchronized SRT captions, uploads them in 8 MiB multipart chunks to owner-scoped private R2 keys, and verifies each completed object.
 12. A final lease-checked callback atomically registers the stored clips in D1 and completes the job. The authenticated `/api/clips` list is owner-scoped; `/api/clips/:clipId/download` streams only the current user's private object.
@@ -131,11 +131,12 @@ Each request uses a fresh random nonce. The Worker stores only its SHA-256 hash 
 ## Next implementation steps
 
 1. Connect the existing dashboard, clip library, job-progress and editor screens to the new owner-scoped clip APIs; add in-app preview and explicit delete/retention controls.
-2. Improve titles and descriptions with an optional semantic adapter, keeping deterministic fallback behavior and no unverified claims.
-3. Add render QA (duration, codec, audio presence, subtitle timing and output decode checks) plus retry-safe cleanup for orphaned R2 multipart uploads.
-4. Benchmark candidate precision, recall, boundary accuracy and processor throughput on an annotated GTA VI VOD set before tuning scoring weights or adding acoustic models.
-5. Move intermediate audio/transcript artifacts to lifecycle-managed private storage and add automated retention/cleanup.
-6. Add live-stream processing only after the VOD pipeline is stable.
+2. Finish connecting the editor to the generated clip media and add non-destructive trim controls that do not imply server-side re-rendering until that API exists.
+3. Improve titles and descriptions with an optional semantic adapter, keeping deterministic fallback behavior and no unverified claims.
+4. Add render QA (duration, codec, audio presence, subtitle timing and output decode checks) plus retry-safe cleanup for orphaned R2 multipart uploads.
+5. Benchmark candidate precision, recall, boundary accuracy and processor throughput on an annotated GTA VI VOD set before tuning scoring weights or adding acoustic models.
+6. Move intermediate audio/transcript artifacts to lifecycle-managed private storage and add automated retention/cleanup.
+7. Add live-stream processing only after the VOD pipeline is stable.
 
 The code and tests do not prove that a live Cloudflare account, R2 bucket or production processor host is configured correctly. No Cloudflare resources are created or deployed by these changes.
 
