@@ -43,7 +43,7 @@ type ObjectStore = {
 function storage(c: AppContext): ObjectStore {
   const backblaze = createBackblazeBucket(c.env);
   if (backblaze) return backblaze;
-  if (c.env.MEDIA) return c.env.MEDIA;
+  if (c.env.MEDIA) return c.env.MEDIA as unknown as ObjectStore;
   throw new Error("Private object storage is not configured.");
 }
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
