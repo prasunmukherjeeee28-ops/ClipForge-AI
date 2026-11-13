@@ -17,7 +17,10 @@ describe("BackblazeBucket configuration", () => {
   });
 
   it("rejects non-HTTPS and malformed bucket configuration", () => {
-    expect(() => new BackblazeBucket({ ...config, endpoint: "http://localhost:9000" })).toThrow(/HTTPS/);
+    expect(() => new BackblazeBucket({ ...config, endpoint: "http://localhost:9000" })).toThrow(/endpoint/);
+    expect(() => new BackblazeBucket({ ...config, endpoint: "https://clipforge-private-media.s3.us-west-004.backblazeb2.com" })).toThrow(/regional S3 endpoint/);
+    expect(() => new BackblazeBucket({ ...config, endpoint: "https://s3.us-west-004.backblazeb2.com/clipforge-private-media" })).toThrow(/without a bucket or path/);
+    expect(() => new BackblazeBucket({ ...config, region: "us-east-005" })).toThrow(/regional S3 endpoint/);
     expect(() => new BackblazeBucket({ ...config, bucket: "tiny" })).toThrow(/bucket name/);
   });
 });
