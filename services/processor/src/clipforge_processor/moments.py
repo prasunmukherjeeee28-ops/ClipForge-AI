@@ -103,7 +103,9 @@ def extract_audio_seconds(
                 if not raw:
                     break
                 sample_count = len(raw) // 2
-                if sample_count == 0:
+                # The final partial second is deliberately excluded: candidate
+                # boundaries are whole-second windows and must not exceed media duration.
+                if sample_count < frames_per_second:
                     break
                 samples = np.frombuffer(raw, dtype="<i2")
                 floating = samples.astype(np.float32, copy=False)
