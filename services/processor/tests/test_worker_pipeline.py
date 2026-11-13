@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from clipforge_processor.worker import _clip_title, _select_render_candidates
+from clipforge_processor.worker import _build_semantic_evidence, _clip_title, _select_render_candidates
 
 
 def test_select_render_candidates_ranks_and_removes_heavy_overlap() -> None:
@@ -41,3 +41,44 @@ def test_clip_title_falls_back_when_transcript_has_no_matching_text(tmp_path: Pa
     transcript.write_text(json.dumps({"segments": []}), encoding="utf-8")
 
     assert _clip_title(transcript, 10.0, 20.0, 2) == "Gameplay highlight 2"
+
+
+
+def test_semantic_evidence_contains_only_candidate_local_bounded_transcript(tmp_path: Path) -> None:
+    transcript = tmp_path / "transcript.json"
+    transcript.write_text(json.dumps({
+        "segments": [
+            {"start": 1, "end": 4, "text": "Outside the candidate"},
+            {"start": 12, "end": 14, "text": "No way, that was unexpected!"},
+            {"start": 40, "end": 45, "text": "After the candidate"},
+        ]
+    }), encoding="utf-8")
+    candidates = [{
+        "startSeconds": 10.0,
+        "endSeconds": 20.0,
+        "score": 0.72,
+        "signals": {
+            "acousticSalience": 0.8,
+            "transcriptVelocity": 0.7,
+            "narrativeArc": 0.6,
+            "novelty": 0.5,
+        },
+        "wordCount": 12,
+        "markerCount": 1,
+        "rationale": "reaction phrase",
+    }]
+
+    evidence = _build_semantic_evidence(candidates, transcript)
+
+    assert len(evidence) == 1
+    assert evidence[0].transcript_excerpt == "No way, that was unexpected!"
+    assert evidence[0].heuristic_score == 0.72
+
+
+def test_clip_title_prefers_sanitized_semantic_title(tmp_path: Path) -> None:
+    transcript = tmp_path / "transcript.json"
+    transcript.write_text(json.dumps({"segments": []}), encoding="utf-8")
+
+    title = _clip_title(transcript, 10.0, 20.0, 1, "  The unexpected GTA moment!  ")
+
+    assert title == "The unexpected GTA moment"
