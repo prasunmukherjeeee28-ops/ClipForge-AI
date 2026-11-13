@@ -1,4 +1,4 @@
-const API_BASE = (import.meta.env.VITE_CLIPFORGE_API_BASE_URL ?? "").replace(/\\/+$/, "");
+const API_BASE = (import.meta.env.VITE_CLIPFORGE_API_BASE_URL ?? "").replace(/\/+$/, "");
 
 export interface JobSubmission {
   id: string;
