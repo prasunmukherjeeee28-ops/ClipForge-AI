@@ -28,9 +28,18 @@ def test_matching_is_one_to_one_and_reports_boundary_error() -> None:
     assert result["matchedHighlights"] == 1
     assert result["precisionAtK"] == 0.5
     assert result["recallAtK"] == 1.0
+    # Highest-IoU matching correctly selects the exact candidate; the second
+    # candidate is still counted as a duplicate prediction.
+    assert result["meanStartBoundaryErrorSeconds"] == 0.0
+    assert result["meanEndBoundaryErrorSeconds"] == 0.0
+    assert result["duplicatePredictionRateAtK"] == 1.0
+
+
+def test_boundary_error_reports_offset_for_matched_prediction() -> None:
+    result = evaluate_windows([window(10, 20)], [window(11, 21)], k=1)
     assert result["meanStartBoundaryErrorSeconds"] == 1.0
     assert result["meanEndBoundaryErrorSeconds"] == 1.0
-    assert result["duplicatePredictionRateAtK"] == 1.0
+    assert result["meanBoundaryErrorSeconds"] == 1.0
 
 
 def test_precision_at_k_uses_requested_k_even_when_fewer_predictions_exist() -> None:
