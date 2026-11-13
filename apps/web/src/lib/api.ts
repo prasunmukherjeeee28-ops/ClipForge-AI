@@ -277,3 +277,28 @@ export async function getJobs(): Promise<UserJob[]> {
   const result = await request<{ jobs: UserJob[] }>("/api/jobs");
   return result.jobs ?? [];
 }
+
+export interface CurrentUser {
+  id: string;
+  email: string;
+}
+
+export async function getCurrentUser(): Promise<CurrentUser> {
+  const result = await request<{ user: CurrentUser }>("/api/me");
+  return result.user;
+}
+
+export interface UserSourceAsset {
+  id: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  status: "uploading" | "finalizing" | "ready" | "failed" | "deleting";
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export async function getSourceAssets(): Promise<UserSourceAsset[]> {
+  const result = await request<{ assets: UserSourceAsset[] }>("/api/source-assets");
+  return result.assets ?? [];
+}
