@@ -5,12 +5,14 @@ on:
     branches: [main, "feat/**"]
     paths:
       - "apps/api/**"
+      - "apps/web/**"
       - "services/processor/**"
       - ".github/workflows/backend-ci.yml"
   pull_request:
     branches: [main]
     paths:
       - "apps/api/**"
+      - "apps/web/**"
       - "services/processor/**"
       - ".github/workflows/backend-ci.yml"
   workflow_dispatch:
@@ -40,6 +42,24 @@ jobs:
         run: npm install
       - name: Typecheck Worker API
         run: npm run typecheck
+
+  web-build:
+    name: React PWA frontend build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install frontend dependencies
+        run: npm install
+      - name: Typecheck and build frontend
+        run: npm run build
 
   processor-tests:
     name: Python processor unit tests
