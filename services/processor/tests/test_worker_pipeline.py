@@ -17,7 +17,7 @@ def test_select_render_candidates_ranks_and_removes_heavy_overlap() -> None:
 
     selected = _select_render_candidates(candidates, limit=3)
 
-    assert [item["startSeconds"] for item in selected] == [12.0, 50.0]
+    assert [item["startSeconds"] for item in selected] == [12.0, 50.0, 80.0]
     assert all(5 <= item["endSeconds"] - item["startSeconds"] <= 120 for item in selected)
 
 
