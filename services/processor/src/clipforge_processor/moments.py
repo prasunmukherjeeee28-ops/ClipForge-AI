@@ -51,6 +51,13 @@ class MomentCandidate:
     word_count: int
     marker_count: int
     rationale: str
+    motion_salience: float = 0.0
+    scene_change_salience: float = 0.0
+    object_presence: float = 0.0
+    object_transition: float = 0.0
+    visual_salience: float = 0.0
+    detected_object_count: int = 0
+    object_classes: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -62,12 +69,62 @@ class MomentCandidate:
                 "transcriptVelocity": round(self.transcript_velocity, 4),
                 "narrativeArc": round(self.narrative_arc, 4),
                 "novelty": round(self.novelty, 4),
+                "motionSalience": round(self.motion_salience, 4),
+                "sceneChangeSalience": round(self.scene_change_salience, 4),
+                "objectPresence": round(self.object_presence, 4),
+                "objectTransition": round(self.object_transition, 4),
+                "visualSalience": round(self.visual_salience, 4),
+                "detectedObjectCount": self.detected_object_count,
+                "objectClasses": list(self.object_classes),
             },
             "wordCount": self.word_count,
             "markerCount": self.marker_count,
             "rationale": self.rationale,
         }
 
+
+def apply_visual_evidence(
+    candidates: list[MomentCandidate],
+    evidence_by_window: dict[tuple[float, float], Any],
+    *,
+    visual_weight: float = 0.18,
+) -> list[MomentCandidate]:
+    """Blend bounded sampled-video evidence into deterministic audio/text scores."""
+    from dataclasses import replace
+
+    if not 0 <= visual_weight <= 0.5:
+        raise ValueError("visual_weight must be between 0 and 0.5")
+    output: list[MomentCandidate] = []
+    for candidate in candidates:
+        evidence = evidence_by_window.get((
+            round(candidate.start_seconds, 3),
+            round(candidate.end_seconds, 3),
+        ))
+        if evidence is None:
+            output.append(candidate)
+            continue
+        visual_score = max(0.0, min(1.0, float(evidence.visual_salience)))
+        rationale_parts = [candidate.rationale]
+        if evidence.motion_salience >= 0.55:
+            rationale_parts.append("high gameplay motion")
+        if evidence.scene_change_salience >= 0.55:
+            rationale_parts.append("visual scene change")
+        if evidence.object_classes:
+            rationale_parts.append("detected " + "/".join(evidence.object_classes[:4]))
+        blended_score = (1.0 - visual_weight) * candidate.score + visual_weight * visual_score
+        output.append(replace(
+            candidate,
+            score=max(0.0, min(1.0, blended_score)),
+            motion_salience=float(evidence.motion_salience),
+            scene_change_salience=float(evidence.scene_change_salience),
+            object_presence=float(evidence.object_presence),
+            object_transition=float(evidence.object_transition),
+            visual_salience=visual_score,
+            detected_object_count=int(evidence.detected_object_count),
+            object_classes=tuple(evidence.object_classes),
+            rationale=", ".join(part for part in rationale_parts if part)[:500],
+        ))
+    return output
 
 def extract_audio_seconds(
     wav_path: Path,
