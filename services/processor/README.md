@@ -133,3 +133,10 @@ Each request uses a fresh random nonce. The Worker stores only its SHA-256 hash 
 6. Add live-stream processing after the VOD pipeline is stable.
 
 The code and tests do not prove that a live Cloudflare account, R2 bucket or production processor host is configured correctly. No Cloudflare resources are created or deployed by these changes.
+
+
+## Vertical clip rendering
+
+The `clipforge_processor.render.render_vertical_clip` function renders an authorized local source segment into a 1080×1920 H.264/AAC MP4. Landscape footage is contained in the vertical canvas over a blurred background, preserving the full gameplay frame and HUD instead of center-cropping the action. Timestamped transcript segments are clipped to the selected interval and emitted as an SRT subtitle track burned into the output.
+
+Rendering uses an FFmpeg argument array (no shell), private temporary files, a bounded duration, timeout, thread count and output-size limit. The renderer is currently a tested processing primitive; orchestration, R2 upload/registration, and the app's clip review/download workflow are separate integration steps.
