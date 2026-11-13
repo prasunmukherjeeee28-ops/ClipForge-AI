@@ -34,7 +34,7 @@ def _select_render_candidates(candidates: list[dict[str, object]], limit: int = 
         end = float(candidate["endSeconds"])
         overlaps = any(
             max(0.0, min(end, float(item["endSeconds"])) - max(start, float(item["startSeconds"])))
-            / max(end, float(item["endSeconds"])) - min(start, float(item["startSeconds"])) > 0.45
+            / (max(end, float(item["endSeconds"])) - min(start, float(item["startSeconds"]))) > 0.45
             for item in selected
         )
         if not overlaps:
@@ -66,10 +66,10 @@ def _clip_title(transcript_path: Path, start_seconds: float, end_seconds: float,
                     snippets.append(cleaned)
             if len(" ".join(snippets)) >= 100:
                 break
-    excerpt = re.sub(r"[\\x00-\\x1f\\x7f]", " ", " ".join(snippets)).strip()
+    excerpt = re.sub(r"[\x00-\x1f\x7f]", " ", " ".join(snippets)).strip()
     excerpt = " ".join(excerpt.split())
     if excerpt:
-        sentence = re.split(r"(?<=[.!?])\\s+", excerpt, maxsplit=1)[0]
+        sentence = re.split(r"(?<=[.!?])\s+", excerpt, maxsplit=1)[0]
         return sentence[:116].rstrip(" .!?") or f"Highlight {index}"
     return f"Gameplay highlight {index}"
 
