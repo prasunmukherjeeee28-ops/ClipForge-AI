@@ -23,7 +23,7 @@ const SOURCE_ASSET_PART_BYTES = 8 * 1024 * 1024;
 const MAX_SOURCE_ASSET_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_SOURCE_ASSET_USER_BYTES = 8 * 1024 * 1024 * 1024;
 const CLIP_UPLOAD_PART_BYTES = 8 * 1024 * 1024;
-const MAX_CLIP_BYTES = 500 * 1024 * 1024;
+const MAX_CLIP_BYTES = 500_000_000;
 const MAX_CLIP_USER_BYTES = 4 * 1024 * 1024 * 1024;
 const SOURCE_ASSET_EXTENSIONS: Record<string, readonly string[]> = {
   "video/mp4": [".mp4", ".m4v"],
@@ -432,16 +432,19 @@ app.post("/internal/processor/clip-uploads", async (c) => {
     status: "uploading" | "stored" | "failed"; leaseId: string;
   }>();
 
-  if (existing?.status === "stored") {
+  if (existing?.status === "stored" && existing.expectedSizeBytes === body.sizeBytes) {
     const stored = await c.env.MEDIA.head(existing.objectKey);
     if (stored && stored.size === existing.expectedSizeBytes) {
+      await c.env.DB.prepare(
+        "UPDATE clip_uploads SET lease_id = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2 AND job_id = ?3 AND status = 'stored'",
+      ).bind(body.leaseId, existing.id, body.jobId).run();
       return c.json({ clipUploadId: existing.id, partSizeBytes: CLIP_UPLOAD_PART_BYTES,
         partCount: Math.ceil(stored.size / CLIP_UPLOAD_PART_BYTES), stored: true });
     }
   }
 
   const used = await c.env.DB.prepare(
-    "SELECT COALESCE((SELECT SUM(size_bytes) FROM clips WHERE user_id = ?1), 0) + COALESCE((SELECT SUM(expected_size_bytes) FROM clip_uploads WHERE user_id = ?1 AND status = 'uploading' AND id != COALESCE(?2, '')), 0) AS usedBytes",
+    "SELECT COALESCE((SELECT SUM(size_bytes) FROM clips WHERE user_id = ?1), 0) + COALESCE((SELECT SUM(expected_size_bytes) FROM clip_uploads WHERE user_id = ?1 AND (status = 'uploading' OR (status = 'stored' AND NOT EXISTS (SELECT 1 FROM clips WHERE clips.id = clip_uploads.id))) AND id != COALESCE(?2, '')), 0) AS usedBytes",
   ).bind(candidate.userId, existing?.id ?? null).first<{ usedBytes: number }>();
   if ((used?.usedBytes ?? 0) + body.sizeBytes! > MAX_CLIP_USER_BYTES) {
     return jsonError(c, "Private clip storage quota would be exceeded.", 409);
@@ -506,6 +509,9 @@ app.post("/internal/processor/clip-uploads/:clipId/parts/:partNumber", async (c)
   const expectedBytes = expectedClipPartSize(upload.expectedSizeBytes, partNumber);
   if (bytes.byteLength !== expectedBytes) return jsonError(c, "Clip upload part size is invalid.", 400);
 
+  await c.env.DB.prepare(
+    "DELETE FROM clip_upload_parts WHERE clip_id = ?1 AND part_number = ?2 AND status = 'uploading' AND updated_at <= datetime('now', '-15 minutes')",
+  ).bind(clipId, partNumber).run();
   const reservation = await c.env.DB.prepare(
     "INSERT INTO clip_upload_parts (clip_id, part_number, size_bytes, status) VALUES (?1, ?2, ?3, 'uploading') ON CONFLICT(clip_id, part_number) DO NOTHING",
   ).bind(clipId, partNumber, expectedBytes).run();
