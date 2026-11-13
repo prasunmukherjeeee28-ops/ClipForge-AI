@@ -66,6 +66,14 @@ class Settings:
                 raise ValueError(f"{name} must be between {minimum} and {maximum}")
             return value
 
+        scratch_dir = os.environ.get("PROCESSOR_SCRATCH_DIR", "/var/lib/clipforge/scratch").strip()
+        ffprobe_binary = os.environ.get("FFPROBE_BINARY", "ffprobe").strip()
+        ffmpeg_binary = os.environ.get("FFMPEG_BINARY", "ffmpeg").strip()
+        if not scratch_dir:
+            raise ValueError("PROCESSOR_SCRATCH_DIR must not be empty")
+        if not ffprobe_binary or not ffmpeg_binary:
+            raise ValueError("FFPROBE_BINARY and FFMPEG_BINARY must not be empty")
+
         return cls(
             api_base_url=base_url,
             shared_secret=secret,
@@ -74,9 +82,9 @@ class Settings:
             youtube_data_api_key=os.environ.get("YOUTUBE_DATA_API_KEY") or None,
             twitch_client_id=os.environ.get("TWITCH_CLIENT_ID") or None,
             twitch_client_secret=os.environ.get("TWITCH_CLIENT_SECRET") or None,
-            scratch_dir=os.environ.get("PROCESSOR_SCRATCH_DIR", "/var/lib/clipforge/scratch").strip(),
-            ffprobe_binary=os.environ.get("FFPROBE_BINARY", "ffprobe").strip(),
-            ffmpeg_binary=os.environ.get("FFMPEG_BINARY", "ffmpeg").strip(),
+            scratch_dir=scratch_dir,
+            ffprobe_binary=ffprobe_binary,
+            ffmpeg_binary=ffmpeg_binary,
             ffprobe_timeout_seconds=bounded_float("PROCESSOR_FFPROBE_TIMEOUT_SECONDS", 30.0, 1.0, 300.0),
             ffmpeg_timeout_seconds=bounded_float("PROCESSOR_FFMPEG_TIMEOUT_SECONDS", 3600.0, 10.0, 14400.0),
             max_video_duration_seconds=bounded_int("PROCESSOR_MAX_VIDEO_DURATION_SECONDS", 43200, 60, 43200),
