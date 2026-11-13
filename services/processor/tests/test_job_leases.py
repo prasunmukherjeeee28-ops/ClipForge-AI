@@ -25,6 +25,7 @@ def make_db() -> sqlite3.Connection:
     db.executescript((ROOT / "database/migrations/0004_source_metadata.sql").read_text())
     db.executescript((ROOT / "database/migrations/0005_authorized_source_assets.sql").read_text())
     db.executescript((ROOT / "database/migrations/0006_media_validation.sql").read_text())
+    db.executescript((ROOT / "database/migrations/0007_transcription.sql").read_text())
     db.execute(
         "INSERT INTO users (id, auth_subject, email) VALUES ('user-1', 'subject-1', 'one@example.com')"
     )
