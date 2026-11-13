@@ -26,13 +26,27 @@ def test_detects_reaction_spike_from_multiple_viewers() -> None:
 
 def test_duplicate_spam_is_heavily_discounted() -> None:
     messages = [
-        ChatMessage(float(30 + index % 8), f"viewer-{index % 8}", "W")
+        ChatMessage(float(30 + index % 8), f"viewer-{index % 3}", "W")
         for index in range(24)
     ]
     windows = score_chat_reactions(messages, duration_seconds=120)
     assert windows
     assert max(item.duplicate_ratio for item in windows) > 0.8
     assert max(item.score for item in windows) < 0.25
+
+
+
+def test_common_reaction_from_distinct_viewers_is_not_spam() -> None:
+    messages = [
+        ChatMessage(float(30 + index), f"viewer-{index}", "LOL")
+        for index in range(8)
+    ]
+    windows = score_chat_reactions(messages, duration_seconds=120)
+    assert windows
+    best = max(windows, key=lambda item: item.score)
+    assert best.unique_authors == 8
+    assert best.duplicate_ratio == 0
+    assert best.score > 0.4
 
 
 def test_single_viewer_cannot_create_a_reaction_spike() -> None:
