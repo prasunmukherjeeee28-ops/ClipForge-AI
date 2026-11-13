@@ -12,7 +12,7 @@ enabled = true
 [[d1_databases]]
 binding = "DB"
 database_name = "clipforge-db"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "a0d7b181-ea86-46ed-abb9-ffcc73e74a7c"
 migrations_dir = "../../database/migrations"
 
 [[r2_buckets]]
