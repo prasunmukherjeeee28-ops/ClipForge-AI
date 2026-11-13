@@ -912,8 +912,8 @@ app.get("/api/jobs/:jobId/candidates", async (c) => {
   ).bind(jobId, userId).first();
   if (!exists) return jsonError(c, "Job not found.", 404);
   const result = await c.env.DB.prepare(
-    "SELECT id, start_seconds AS startSeconds, end_seconds AS endSeconds, title, transcript_excerpt AS transcriptExcerpt, score, category, rationale, signals_json AS signalsJson, review_status AS reviewStatus, created_at AS createdAt FROM candidates WHERE job_id = ?1 ORDER BY score DESC, start_seconds ASC LIMIT 100",
-  ).bind(jobId).all();
+    "SELECT candidates.id, candidates.start_seconds AS startSeconds, candidates.end_seconds AS endSeconds, candidates.title, candidates.transcript_excerpt AS transcriptExcerpt, candidates.score, candidates.category, candidates.rationale, candidates.signals_json AS signalsJson, candidates.review_status AS reviewStatus, candidates.created_at AS createdAt FROM candidates INNER JOIN jobs ON jobs.id = candidates.job_id WHERE candidates.job_id = ?1 AND jobs.user_id = ?2 ORDER BY candidates.score DESC, candidates.start_seconds ASC LIMIT 100",
+  ).bind(jobId, userId).all();
   return c.json({ candidates: result.results });
 });
 
