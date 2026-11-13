@@ -381,7 +381,6 @@ async def run_once() -> int:
             clips_dir = job_dir / "clips"
             clips_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             clips_dir.chmod(0o700)
-            part_size = 8 * 1024 * 1024
 
             for index, candidate in enumerate(selected, start=1):
                 start_seconds = float(candidate["startSeconds"])
