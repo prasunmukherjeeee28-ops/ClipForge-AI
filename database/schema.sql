@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS clips (
   upload_id TEXT,
   upload_size_bytes INTEGER CHECK(upload_size_bytes IS NULL OR upload_size_bytes BETWEEN 1 AND 536870912),
   output_size_bytes INTEGER CHECK(output_size_bytes IS NULL OR output_size_bytes BETWEEN 1 AND 536870912),
+  output_sha256 TEXT CHECK(output_sha256 IS NULL OR length(output_sha256) = 64),
   lease_id TEXT,
   lease_token_hash TEXT,
   lease_expires_at TEXT,
