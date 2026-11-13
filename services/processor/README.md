@@ -26,7 +26,7 @@ The user must upload an original/export or another provider-approved file they h
 - A deployed Worker with migrations `0001_initial.sql` through `0007_transcription.sql` applied.
 - Cloudflare Access configured for the two intended users.
 - Worker secret `PROCESSOR_SHARED_SECRET` set to a random value of at least 32 characters and supplied to the processor environment. Never commit it.
-- Persistent, access-restricted volumes mounted at `PROCESSOR_SCRATCH_DIR` and `PROCESSOR_STT_MODEL_CACHE_DIR`. Audio and transcript artifacts remain on the trusted processor host; the model cache avoids downloading weights for every job.
+- Persistent, access-restricted volumes mounted at `PROCESSOR_SCRATCH_DIR` and `PROCESSOR_STT_MODEL_CACHE_DIR`. Audio and transcript artifacts remain on the trusted processor host; the model cache avoids downloading weights for every job. The model is downloaded from its model registry on first use, so allow outbound HTTPS during initial setup or pre-populate the cache before running jobs.
 
 ## Configuration
 
