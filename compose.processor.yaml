@@ -1,0 +1,31 @@
+name: clipforge
+
+services:
+  processor:
+    build:
+      context: .
+      dockerfile: services/processor/Dockerfile
+    image: clipforge-processor:local
+    init: true
+    restart: unless-stopped
+    env_file:
+      - ./services/processor/.env
+    environment:
+      PROCESSOR_SCRATCH_DIR: /var/lib/clipforge/scratch
+      PROCESSOR_STT_MODEL_CACHE_DIR: /var/cache/clipforge/models
+    volumes:
+      - processor-scratch:/var/lib/clipforge/scratch
+      - processor-model-cache:/var/cache/clipforge/models
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    stop_grace_period: 45s
+
+volumes:
+  processor-scratch:
+  processor-model-cache:
