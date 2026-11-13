@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   transcript_size_bytes INTEGER CHECK(transcript_size_bytes IS NULL OR transcript_size_bytes BETWEEN 2 AND 100000000),
   transcript_sha256 TEXT CHECK(transcript_sha256 IS NULL OR length(transcript_sha256) = 64),
   transcript_verified_at TEXT,
+  candidate_generation_id TEXT,
   title TEXT,
   status TEXT NOT NULL CHECK(status IN ('queued','processing','review','completed','failed','cancelled')) DEFAULT 'queued',
   progress INTEGER NOT NULL DEFAULT 0 CHECK(progress BETWEEN 0 AND 100),
@@ -94,6 +95,10 @@ CREATE TABLE IF NOT EXISTS candidates (
   title TEXT,
   transcript_excerpt TEXT,
   score REAL CHECK(score IS NULL OR (score >= 0 AND score <= 100)),
+  generation_id TEXT,
+  category TEXT NOT NULL DEFAULT 'unknown' CHECK(category IN ('funny','action','fail','glitch','banter','unknown')),
+  rationale TEXT,
+  signals_json TEXT NOT NULL DEFAULT '{}',
   review_status TEXT NOT NULL DEFAULT 'pending' CHECK(review_status IN ('pending','selected','rejected')),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -127,6 +132,7 @@ CREATE INDEX IF NOT EXISTS idx_jobs_lease_expiry ON jobs(status, lease_expires_a
 CREATE INDEX IF NOT EXISTS idx_jobs_media_stage ON jobs(status, stage, media_verified_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_transcript_stage ON jobs(status, stage, transcript_verified_at);
 CREATE INDEX IF NOT EXISTS idx_candidates_job ON candidates(job_id);
+CREATE INDEX IF NOT EXISTS idx_candidates_generation ON candidates(job_id, generation_id, review_status);
 CREATE INDEX IF NOT EXISTS idx_clips_user_created ON clips(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_clips_job ON clips(job_id);
 
