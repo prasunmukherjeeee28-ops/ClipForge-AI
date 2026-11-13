@@ -1,6 +1,6 @@
 # ClipForge Python Processor
 
-D1-backed single-job processor with official YouTube/Twitch VOD metadata inspection and private creator-authorized source-file uploads. This is source ingestion, not yet a clip generator.
+D1-backed single-job processor with official YouTube/Twitch VOD metadata inspection, private creator-authorized source uploads, FFprobe validation and normalized audio extraction. This is media preparation, not yet a clip generator.
 
 ## What it does now
 - Signs machine requests with HMAC-SHA256 and one-time nonces.
@@ -11,12 +11,12 @@ D1-backed single-job processor with official YouTube/Twitch VOD metadata inspect
 - Inspects metadata through the official YouTube Data API or Twitch Helix API.
 - Detects normal VODs, completed livestream archives, active livestreams and upcoming livestreams.
 - Persists verified source ID, title, duration and publication timestamp through a lease-protected Worker callback.
-- Stops safely when the source is live; a VOD with an attached ready source file transitions to `source_ready`.
+- Stops safely when the source is live; for a VOD, streams the attached owner-matched R2 object through the lease-scoped Worker endpoint, validates its actual streams/duration/dimensions with FFprobe, and extracts 16 kHz mono PCM WAV audio with FFmpeg.\n- Stores the normalized audio and a small manifest in a private, owner/job-scoped processor scratch directory, then marks the job `review` / `audio_extracted`.
 
 It does not scrape platform pages, extract undocumented playback URLs, bypass access controls, or download media from YouTube/Twitch. The account owner must upload an original/export or another provider-approved file they have permission to process. Official platform metadata does not prove that permission or prove that the uploaded file matches the linked VOD. The API stores the supplied file in private R2; FFprobe validation, processor-side retrieval, transcription, AI moment detection and clip rendering are later pipeline stages.
 
 ## Requirements
-- Python 3.11+
+- Python 3.11+\n- FFmpeg and FFprobe installed on the processor host and available on PATH (or configured with `FFMPEG_BINARY` / `FFPROBE_BINARY`).\n- A persistent, access-restricted processor volume mounted at `PROCESSOR_SCRATCH_DIR`; the audio artifact must remain on the same trusted worker host for the upcoming transcription stage.
 - A deployed Worker with migrations `0001_initial.sql` through `0005_authorized_source_assets.sql` applied.
 - Cloudflare Access configured for the two intended users.
 - Worker secret `PROCESSOR_SHARED_SECRET` set to a random value of at least 32 characters.
@@ -63,7 +63,7 @@ Run unit tests:
 pytest
 ```
 
-## Request signing
+## Media processing limits\n- Maximum source duration: 12 hours by default (`PROCESSOR_MAX_VIDEO_DURATION_SECONDS` can be lowered but not raised above 12 hours).\n- Maximum video dimensions: 7680 × 4320.\n- Normalized audio: mono, 16 kHz, signed 16-bit PCM WAV.\n- Maximum normalized audio size: 1.5 GB.\n- FFmpeg uses 1–4 threads (2 by default) and has a bounded timeout. FFprobe and FFmpeg are launched as argument arrays, never through a shell.\n- The worker keeps `audio.wav` and `media.json` under `<scratch>/users/<user-uuid>/<job-uuid>/`, with restrictive directory/file permissions. It deletes the temporary downloaded source after successful extraction. This scratch artifact is not yet copied to R2; keep the processor volume persistent and private until the transcription stage consumes it. Configure backup, encryption-at-rest and retention at the host/storage layer.\n\n## Request signing
 The client signs the exact bytes sent in the HTTP body. The canonical message is:
 
 ```text
@@ -86,7 +86,7 @@ The Worker checks the timestamp (±300 seconds) and verifies the HMAC. Each clai
 5. `POST /api/jobs/:jobId/source-asset` attaches that ready asset to the user's job and queues it for metadata inspection.
 6. The processor verifies the platform metadata and moves a VOD to `source_ready`.
 
-The API currently allows MP4, MOV, WebM and Matroska MIME/filename combinations. These are client declarations, not proof of file contents; the next media-validation stage must use FFprobe before attempting to process the file. Each asset is limited to 2 GiB and each user to 8 GiB of ready/in-progress source storage. R2 multipart parts use 8 MiB chunks and are stored under a server-generated owner-scoped key.
+The API currently allows MP4, MOV, WebM and Matroska MIME/filename combinations. These are client declarations, not proof of file contents; FFprobe is the authority for actual streams. Each source asset is limited to 2 GiB and each user to 8 GiB of ready/in-progress source storage. R2 multipart parts use 8 MiB chunks and are stored under a server-generated owner-scoped key.
 
 ## Next implementation steps
 1. Add a tightly scoped processor-side path to read the user's attached private R2 object, with lease/ownership validation.
