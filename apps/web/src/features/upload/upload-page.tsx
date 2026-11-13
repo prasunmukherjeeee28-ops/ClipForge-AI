@@ -14,7 +14,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { cn, formatBytes } from "@/lib/utils";
 import {
@@ -64,10 +63,6 @@ export function UploadPage() {
   const [error, setError] = useState<string | null>(null);
   const [session, setSession] = useState<UploadSession | null>(null);
   const [submittedJobId, setSubmittedJobId] = useState<string | null>(null);
-
-  const [captions, setCaptions] = useState(true);
-  const [vertical, setVertical] = useState(true);
-  const [reviewScores, setReviewScores] = useState(true);
 
   const pickFile = useCallback((picked: File | undefined | null) => {
     setError(null);
@@ -144,11 +139,7 @@ export function UploadPage() {
       let active = session;
 
       if (!active?.jobId) {
-        const job = await createSourceJob(normalizedUrl, {
-          captions,
-          vertical,
-          reviewScores,
-        });
+        const job = await createSourceJob(normalizedUrl);
         active = {
           jobId: job.id,
           sourceUrl: normalizedUrl,
@@ -203,7 +194,7 @@ export function UploadPage() {
       setPhase("idle");
       setError(cause instanceof Error ? cause.message : "The source upload could not be completed. Retry to resume missing parts.");
     }
-  }, [file, sourceUrl, session, captions, vertical, reviewScores]);
+  }, [file, sourceUrl, session]);
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -361,25 +352,26 @@ export function UploadPage() {
         </div>
 
         <Card className="h-fit lg:col-span-2">
-          <CardHeader title="Clip preferences" description="Saved with the source job" />
+          <CardHeader title="Processing defaults" description="Applied to every VOD job" />
           <div className="space-y-1 px-3 pb-5">
             {[
               {
                 icon: Subtitles,
-                label: "Auto captions",
-                desc: "Request synced captions when transcription is available",
-                value: captions,
-                set: setCaptions,
+                label: "Burned-in captions",
+                desc: "Transcript captions are added to finished clips",
               },
               {
                 icon: Sparkles,
-                label: "Review scores",
-                desc: "Request hook / context / payoff estimates",
-                value: reviewScores,
-                set: setReviewScores,
+                label: "AI moment detection",
+                desc: "The processor scores moments and selects clip candidates",
               },
-            ].map(({ icon: Icon, label, desc, value, set }) => (
-              <div key={label} className="flex items-center gap-3 rounded-lg px-2 py-2.5">
+              {
+                icon: Scissors,
+                label: "9:16 vertical export",
+                desc: "Every finished clip uses the vertical format",
+              },
+            ].map(({ icon: Icon, label, desc }) => (
+              <div key={label} className="flex items-center gap-3 rounded-lg px-2 py-3">
                 <span className="glass flex h-8 w-8 shrink-0 items-center justify-center rounded-lg">
                   <Icon className="h-4 w-4 text-violet-350" />
                 </span>
@@ -387,38 +379,9 @@ export function UploadPage() {
                   <p className="text-[13px] font-medium text-zinc-200">{label}</p>
                   <p className="text-xs leading-snug text-zinc-500">{desc}</p>
                 </div>
-                <Switch checked={value} onCheckedChange={set} label={label} disabled={!!session || phase !== "idle"} />
+                <Badge tone="green">On</Badge>
               </div>
             ))}
-
-            <div className="mt-2 border-t hairline px-2 pt-3">
-              <label className="text-xs font-medium text-zinc-500" htmlFor="aspect">
-                Export framing
-              </label>
-              <div className="mt-2 grid grid-cols-2 gap-2" id="aspect" role="radiogroup" aria-label="Export framing">
-                {[
-                  { value: false, label: "16:9 landscape" },
-                  { value: true, label: "9:16 vertical" },
-                ].map(({ value, label }) => (
-                  <button
-                    key={label}
-                    role="radio"
-                    aria-checked={vertical === value}
-                    disabled={!!session || phase !== "idle"}
-                    onClick={() => setVertical(value)}
-                    className={cn(
-                      "rounded-lg border px-3 py-2 text-[13px] transition-all duration-200 disabled:opacity-60",
-                      vertical === value
-                        ? "border-violet-550/50 bg-violet-550/10 text-zinc-100"
-                        : "hairline text-zinc-500 hover:text-zinc-300"
-                    )}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
             <div className="px-2 pt-4">
               <Button
                 className="w-full"
