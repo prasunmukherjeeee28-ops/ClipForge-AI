@@ -65,7 +65,7 @@ def test_gemini_adapter_refines_scores_and_returns_grounded_titles(monkeypatch) 
     assert result[0].score == 0.795
     assert result[0].title_hint == "The jump goes horribly wrong"
     assert "transcript_excerpt" in captured["body"]["contents"][0]["parts"][0]["text"]
-    assert captured["params"] == {"key": "test-api-key-12345"}
+    assert captured["headers"] == {"x-goog-api-key": "test-api-key-12345"}
     assert captured["timeout"] == 25.0
 
 
