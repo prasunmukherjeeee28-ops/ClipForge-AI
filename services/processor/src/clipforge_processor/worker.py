@@ -11,6 +11,7 @@ from .client import ProcessorClient
 from .config import Settings
 from .media import MediaProcessingError, extract_audio, probe_media
 from .source_adapters import SourceInspectionError, inspect_video_url
+from .transcription_runner import run_transcription_process
 
 T = TypeVar("T")
 
@@ -244,8 +245,33 @@ async def run_once() -> int:
             _write_manifest(job_dir, job_id, user_id, source_asset_id, probe, audio_size)
             source_path.unlink(missing_ok=True)
 
+            await _with_lease(
+                client.report_progress(job_id, lease_id, lease_token, "transcribing_audio", 35),
+                cancelled,
+                lease_lost,
+            )
+            transcription = await _with_lease(
+                run_transcription_process(
+                    client,
+                    job_id=job_id,
+                    lease_id=lease_id,
+                    lease_token=lease_token,
+                    audio_path=audio_path,
+                    output_dir=job_dir / "transcription",
+                    source_asset_id=source_asset_id,
+                    duration_seconds=probe.duration_seconds,
+                    settings=settings,
+                ),
+                cancelled,
+                lease_lost,
+            )
+            await _with_lease(
+                client.report_progress(job_id, lease_id, lease_token, "finalizing_transcript", 59),
+                cancelled,
+                lease_lost,
+            )
             result = await _with_lease(
-                client.report_media_ready(
+                client.report_transcription_ready(
                     job_id, lease_id, lease_token,
                     container=probe.container,
                     video_codec=probe.video_codec,
@@ -254,6 +280,11 @@ async def run_once() -> int:
                     height=probe.height,
                     duration_seconds=probe.duration_seconds,
                     audio_size_bytes=audio_size,
+                    transcript_model=transcription["model"],
+                    transcript_language=transcription["language"],
+                    transcript_segment_count=transcription["segment_count"],
+                    transcript_size_bytes=transcription["size_bytes"],
+                    transcript_sha256=transcription["sha256"],
                 ),
                 cancelled,
                 lease_lost,
@@ -269,7 +300,10 @@ async def run_once() -> int:
                         "resolution": f"{probe.width}x{probe.height}",
                         "audioBytes": audio_size,
                         "audioPath": str(audio_path),
-                        "outcome": "audio_extracted",
+                        "transcriptPath": transcription["path"],
+                        "transcriptSegments": transcription["segment_count"],
+                        "transcriptLanguage": transcription["language"],
+                        "outcome": "transcribed",
                         "result": result,
                     },
                     ensure_ascii=False,
