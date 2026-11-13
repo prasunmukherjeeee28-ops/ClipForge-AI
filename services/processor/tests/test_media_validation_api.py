@@ -28,6 +28,7 @@ def make_db() -> sqlite3.Connection:
         "0006_media_validation.sql",
         "0007_transcription.sql",
         "0008_candidate_persistence.sql",
+        "0009_clip_rendering.sql",
     ):
         db.executescript((ROOT / "database/migrations" / migration).read_text())
     db.executemany(
