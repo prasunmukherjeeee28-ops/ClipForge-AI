@@ -13,6 +13,7 @@ from clipforge_processor.moments import (
     detect_moments,
     extract_audio_seconds,
     non_maximum_suppression,
+    _normalised_marker_counts,
 )
 
 
@@ -179,3 +180,46 @@ def test_candidate_windows_never_extend_past_fractional_audio_duration(tmp_path:
     candidates = detect_moments(audio, transcript, window_seconds=(10,), step_seconds=1, score_threshold=0)
     assert candidates
     assert all(item.end_seconds <= 15.5 for item in candidates)
+
+
+
+def test_reaction_markers_match_whole_phrases_not_substrings() -> None:
+    assert _normalised_marker_counts("The whole lobby went quiet") == {}
+    assert _normalised_marker_counts("No way! That was close.") == {
+        "no way": 1,
+        "that was close": 1,
+    }
+
+
+def test_short_speech_burst_scores_above_evenly_spread_speech(tmp_path: Path) -> None:
+    audio = tmp_path / "audio.wav"
+    clustered_transcript = tmp_path / "clustered.json"
+    distributed_transcript = tmp_path / "distributed.json"
+    make_wav(audio, duration=20, loud_range=None)
+
+    words = ["we", "need", "to", "move", "right", "now", "come", "on", "go", "go", "go", "go"]
+    clustered = [
+        {"start": 5 + index * 0.3, "end": 5.2 + index * 0.3, "text": word}
+        for index, word in enumerate(words)
+    ]
+    distributed = [
+        {"start": 1 + index, "end": 1.2 + index, "text": word}
+        for index, word in enumerate(words)
+    ]
+    make_transcript(clustered_transcript, [{
+        "start": 5, "end": 9, "text": " ".join(words), "words": clustered,
+    }])
+    make_transcript(distributed_transcript, [{
+        "start": 1, "end": 13, "text": " ".join(words), "words": distributed,
+    }])
+
+    clustered_result = detect_moments(
+        audio, clustered_transcript, window_seconds=(15,), step_seconds=1, score_threshold=0,
+    )
+    distributed_result = detect_moments(
+        audio, distributed_transcript, window_seconds=(15,), step_seconds=1, score_threshold=0,
+    )
+    assert clustered_result and distributed_result
+    assert max(item.transcript_velocity for item in clustered_result) > max(
+        item.transcript_velocity for item in distributed_result
+    )

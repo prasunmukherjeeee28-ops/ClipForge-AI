@@ -182,8 +182,15 @@ def _range_sum(prefix: list[float], start: int, end: int) -> float:
 
 
 def _normalised_marker_counts(text: str) -> Counter[str]:
+    """Count complete reaction phrases, never accidental substrings inside other words."""
     lowered = " ".join(_WORD_RE.findall(text.lower()))
-    return Counter({marker: lowered.count(marker) for marker in HIGHLIGHT_MARKERS if marker in lowered})
+    counts: Counter[str] = Counter()
+    for marker in HIGHLIGHT_MARKERS:
+        pattern = rf"(?<![a-z0-9']){re.escape(marker)}(?![a-z0-9'])"
+        count = len(re.findall(pattern, lowered))
+        if count:
+            counts[marker] = count
+    return counts
 
 
 def _iou(left: MomentCandidate, right: MomentCandidate) -> float:
@@ -325,8 +332,18 @@ def detect_moments(
             acoustic = min(1.0, 0.65 * peak_spike + 0.35 * min(1.0, average_spike * 4.0))
 
             velocity = min(1.0, speech_rate / 2.5)
+            # A short burst can be more informative than the same word count
+            # spread evenly across a long window. Use a bounded rolling 5s peak.
+            burst_peak = max(
+                (
+                    _range_sum(words_prefix, second, min(end_index, second + 5)) / 5.0
+                    for second in range(start, max(start + 1, end_index - 4))
+                ),
+                default=0.0,
+            )
+            burst = min(1.0, burst_peak / 3.5)
             marker_density = min(1.0, marker_count / 2.0)
-            transcript_velocity = 0.7 * velocity + 0.3 * marker_density
+            transcript_velocity = 0.55 * velocity + 0.25 * burst + 0.20 * marker_density
 
             third = max(1, length // 3)
             first_speech = _range_sum(speech_prefix, start, min(end_index, start + third))
