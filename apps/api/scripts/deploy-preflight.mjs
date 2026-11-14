@@ -50,12 +50,6 @@ export function validateDeployConfig(content) {
     errors.push("ACCESS_AUD must be the real Cloudflare Access application audience tag.");
   }
 
-  const emails = (vars("ALLOWED_EMAILS") || "").split(",").map((email) => email.trim().toLowerCase()).filter(Boolean);
-  const validEmail = /^[^\s@,]+@[^\s@,]+\.[^\s@,.]+$/;
-  if (emails.length !== 2 || new Set(emails).size !== 2 || emails.some((email) => !validEmail.test(email) || hasPlaceholder(email))) {
-    errors.push("ALLOWED_EMAILS must contain exactly two distinct, real email addresses.");
-  }
-
   const region = (vars("B2_REGION") || "").trim();
   const bucket = (vars("B2_BUCKET") || "").trim();
   const endpoint = (vars("B2_ENDPOINT") || "").trim();
@@ -84,7 +78,7 @@ export function validateSecretList(secretListText) {
   catch { return ["Wrangler did not return valid JSON from the Worker secret list."]; }
   if (!Array.isArray(entries)) return ["Wrangler secret list must be a JSON array."];
   const names = new Set(entries.map((entry) => entry && entry.name).filter((name) => typeof name === "string"));
-  const required = ["PROCESSOR_SHARED_SECRET", "B2_ACCESS_KEY_ID", "B2_SECRET_ACCESS_KEY"];
+  const required = ["PROCESSOR_SHARED_SECRET", "B2_ACCESS_KEY_ID", "B2_SECRET_ACCESS_KEY", "INVITE_CODES"];
   return required.filter((name) => !names.has(name)).map((name) => "Missing Worker secret: " + name + ".");
 }
 
