@@ -7,10 +7,11 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
-Platform = Literal["youtube", "twitch"]
+Platform = Literal["youtube", "twitch", "kick"]
 SourceType = Literal["video", "live"]
 YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 TWITCH_ID_RE = re.compile(r"^[0-9]{1,20}$")
+KICK_VOD_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -95,7 +96,23 @@ def parse_source_reference(raw_url: str) -> SourceReference:
 
         return SourceReference("twitch", source_id, f"https://www.twitch.tv/videos/{source_id}")
 
-    raise SourceInspectionError("unsupported_source_url", "Only supported YouTube video and Twitch VOD URLs can be inspected.")
+    if host in {"kick.com", "www.kick.com"}:
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if (
+            len(path_parts) == 3
+            and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", path_parts[0])
+            and path_parts[1].lower() == "videos"
+            and KICK_VOD_ID_RE.fullmatch(path_parts[2])
+        ):
+            source_id = path_parts[2].lower()
+            canonical = f"https://kick.com/{path_parts[0]}/videos/{source_id}"
+            return SourceReference("kick", source_id, canonical)
+        raise SourceInspectionError(
+            "unsupported_source_url",
+            "Use one Kick VOD URL in the form https://kick.com/channel/videos/video-id.",
+        )
+
+    raise SourceInspectionError("unsupported_source_url", "Only supported YouTube videos, Twitch VODs, and Kick VODs are accepted.")
 
 
 def parse_youtube_duration(value: str | None) -> int | None:
@@ -316,6 +333,11 @@ async def inspect_video_url(
 ) -> SourceMetadata:
     """Inspect a submitted URL through official metadata APIs only."""
     reference = parse_source_reference(raw_url)
+    if reference.platform == "kick":
+        raise SourceInspectionError(
+            "source_metadata_unsupported",
+            "Kick VOD metadata is read from the supported video import; use the link importer.",
+        )
     if reference.platform == "youtube":
         if not youtube_api_key:
             raise SourceInspectionError("source_credentials_missing", "YouTube metadata inspection is not configured.")
