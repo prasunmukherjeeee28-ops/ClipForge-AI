@@ -15,14 +15,14 @@ if (!manifest.includes('android:host="auth"')) {
     throw new Error("Could not locate the MainActivity manifest block.");
   }
 
-  const intentFilter = \`
+  const intentFilter = `
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="com.clipforge.app" android:host="auth" />
             </intent-filter>
-\`;
+`;
   manifest = manifest.slice(0, activityEnd) + intentFilter + manifest.slice(activityEnd);
   await writeFile(manifestPath, manifest);
 }
