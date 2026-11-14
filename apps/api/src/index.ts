@@ -152,17 +152,42 @@ function inviteCodes(env: Bindings): string[] {
   } catch { return []; }
 }
 
-function sourcePlatform(value: string): "youtube" | "twitch" | null {
+function sourcePlatform(value: string): "youtube" | "twitch" | "kick" | null {
   let url: URL;
   try {
     url = new URL(value);
   } catch {
     return null;
   }
-  if (url.protocol !== "https:" || url.username || url.password || url.port) return null;
+  if (url.protocol !== "https:" || url.username || url.password || url.port || url.hash) return null;
+
   const host = url.hostname.toLowerCase();
-  if (["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"].includes(host)) return "youtube";
-  if (["twitch.tv", "www.twitch.tv", "m.twitch.tv", "clips.twitch.tv"].includes(host)) return "twitch";
+  const parts = url.pathname.split("/").filter(Boolean);
+
+  if (["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"].includes(host)) {
+    const videoId = host === "youtu.be"
+      ? (parts.length === 1 ? parts[0] : null)
+      : url.pathname === "/watch"
+        ? url.searchParams.get("v")
+        : (["shorts", "live", "embed"].includes(parts[0] ?? "") && parts.length === 2 ? parts[1] : null);
+    return videoId && /^[A-Za-z0-9_-]{11}$/.test(videoId) ? "youtube" : null;
+  }
+
+  if (["twitch.tv", "www.twitch.tv", "m.twitch.tv"].includes(host)) {
+    return parts.length === 2 && parts[0].toLowerCase() === "videos" && /^[0-9]{1,20}$/.test(parts[1])
+      ? "twitch"
+      : null;
+  }
+
+  if (["kick.com", "www.kick.com"].includes(host)) {
+    const kickVodId = parts[2] ?? "";
+    return parts.length === 3 && /^[A-Za-z0-9_-]{1,100}$/.test(parts[0]) &&
+      parts[1].toLowerCase() === "videos" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(kickVodId)
+      ? "kick"
+      : null;
+  }
+
   return null;
 }
 
@@ -201,10 +226,11 @@ app.post("/internal/processor/claim", async (c) => {
   const leaseToken = uuid() + uuid();
   const leaseTokenHash = await sha256Hex(leaseToken);
   const job = await c.env.DB.prepare(
-    "UPDATE jobs SET status = 'processing', stage = 'claimed', attempt_count = attempt_count + 1, lease_id = ?1, lease_token_hash = ?2, lease_expires_at = datetime('now', '+90 seconds'), last_heartbeat_at = CURRENT_TIMESTAMP, started_at = COALESCE(started_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = (SELECT id FROM jobs WHERE status = 'queued' AND cancel_requested = 0 AND (source_mode = 'url' OR (source_mode = 'upload' AND source_asset_id IS NOT NULL AND EXISTS (SELECT 1 FROM source_assets WHERE source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id AND source_assets.status = 'ready'))) ORDER BY created_at ASC LIMIT 1) AND status = 'queued' RETURNING id, user_id AS userId, source_url AS sourceUrl, CASE WHEN source_mode = 'upload' THEN 'upload' ELSE source_platform END AS sourcePlatform, source_type AS sourceType, source_asset_id AS sourceAssetId, source_mode AS sourceMode, options_json AS optionsJson, attempt_count AS attemptCount",
+    "UPDATE jobs SET status = 'processing', stage = 'claimed', attempt_count = attempt_count + 1, lease_id = ?1, lease_token_hash = ?2, lease_expires_at = datetime('now', '+90 seconds'), last_heartbeat_at = CURRENT_TIMESTAMP, started_at = COALESCE(started_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = (SELECT id FROM jobs WHERE status = 'queued' AND cancel_requested = 0 AND (source_mode = 'url' OR (source_mode = 'upload' AND source_asset_id IS NOT NULL AND EXISTS (SELECT 1 FROM source_assets WHERE source_assets.id = jobs.source_asset_id AND source_assets.user_id = jobs.user_id AND source_assets.status = 'ready'))) ORDER BY created_at ASC LIMIT 1) AND status = 'queued' RETURNING id, user_id AS userId, source_url AS sourceUrl, CASE WHEN source_mode = 'upload' THEN 'upload' ELSE source_provider END AS sourcePlatform, source_provider AS sourceProvider, source_type AS sourceType, source_asset_id AS sourceAssetId, source_mode AS sourceMode, options_json AS optionsJson, attempt_count AS attemptCount",
   ).bind(leaseId, leaseTokenHash).first<{
     id: string; userId: string; sourceUrl: string; sourcePlatform: string;
-    sourceType: string; sourceAssetId: string | null; sourceMode: "url" | "upload";
+    sourceProvider: "youtube" | "twitch" | "kick"; sourceType: string;
+    sourceAssetId: string | null; sourceMode: "url" | "upload";
     optionsJson: string; attemptCount: number;
   }>();
 
@@ -252,7 +278,9 @@ app.post("/internal/processor/source-metadata", async (c) => {
     ? typeof body.sourceId === "string" && /^[A-Za-z0-9_-]{11}$/.test(body.sourceId)
     : body?.sourcePlatform === "twitch"
       ? typeof body.sourceId === "string" && /^[0-9]{1,20}$/.test(body.sourceId)
-      : false;
+      : body?.sourcePlatform === "kick"
+        ? typeof body.sourceId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.sourceId)
+        : false;
   if (
     !body?.jobId || !body.leaseId || !body.leaseToken ||
     !sourceIdValid ||
@@ -268,7 +296,7 @@ app.post("/internal/processor/source-metadata", async (c) => {
 
   const tokenHash = await sha256Hex(body.leaseToken);
   const result = await c.env.DB.prepare(
-    "UPDATE jobs SET source_type = ?1, source_id = ?2, title = ?3, source_duration_seconds = ?4, source_published_at = ?5, source_verified_at = CURRENT_TIMESTAMP, stage = 'source_metadata_verified', progress = MAX(progress, 5), updated_at = CURRENT_TIMESTAMP WHERE id = ?6 AND lease_id = ?7 AND lease_token_hash = ?8 AND status = 'processing' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP AND source_platform = ?9",
+    "UPDATE jobs SET source_type = ?1, source_id = ?2, title = ?3, source_duration_seconds = ?4, source_published_at = ?5, source_verified_at = CURRENT_TIMESTAMP, stage = 'source_metadata_verified', progress = MAX(progress, 5), updated_at = CURRENT_TIMESTAMP WHERE id = ?6 AND lease_id = ?7 AND lease_token_hash = ?8 AND status = 'processing' AND cancel_requested = 0 AND lease_expires_at > CURRENT_TIMESTAMP AND source_provider = ?9",
   ).bind(
     body.sourceType,
     body.sourceId,
@@ -1398,14 +1426,14 @@ apiRoutes.post("/jobs", async (c) => {
   };
 
   const user = c.get("user");
-  const created: Array<{ id: string; status: "queued"; stage: "queued"; sourcePlatform: string; sourceMode: "url" }> = [];
+  const created: Array<{ id: string; status: "queued"; stage: "queued"; sourcePlatform: string; sourceProvider: string; sourceMode: "url" }> = [];
   const inserts = parsed.map((item) => {
     const id = uuid();
     const platform = item.platform as "youtube" | "twitch";
-    created.push({ id, status: "queued", stage: "queued", sourcePlatform: platform, sourceMode: "url" });
+    created.push({ id, status: "queued", stage: "queued", sourcePlatform: platform, sourceProvider: platform, sourceMode: "url" });
     return c.env.DB.prepare(
-      "INSERT INTO jobs (id, user_id, source_url, source_platform, source_mode, source_authorized_at, options_json, status, stage) VALUES (?1, ?2, ?3, ?4, 'url', CURRENT_TIMESTAMP, ?5, 'queued', 'queued')",
-    ).bind(id, user.id, item.url, platform, JSON.stringify(safeOptions));
+      "INSERT INTO jobs (id, user_id, source_url, source_platform, source_provider, source_mode, source_authorized_at, options_json, status, stage) VALUES (?1, ?2, ?3, ?4, ?5, 'url', CURRENT_TIMESTAMP, ?6, 'queued', 'queued')",
+    ).bind(id, user.id, item.url, platform === "kick" ? "twitch" : platform, platform, JSON.stringify(safeOptions));
   });
 
   // D1 batch is transactional: a bulk submission is all-or-nothing.
@@ -1477,7 +1505,7 @@ apiRoutes.get("/jobs", async (c) => {
   const requestedLimit = Number(c.req.query("limit") ?? 50);
   const limit = Math.min(Math.max(Number.isFinite(requestedLimit) ? Math.trunc(requestedLimit) : 50, 1), 100);
   const result = await c.env.DB.prepare(
-    "SELECT id, source_url AS sourceUrl, CASE WHEN source_mode = 'upload' THEN 'upload' ELSE source_platform END AS sourcePlatform, source_mode AS sourceMode, source_type AS sourceType, source_id AS sourceId, source_duration_seconds AS sourceDurationSeconds, source_published_at AS sourcePublishedAt, source_verified_at AS sourceVerifiedAt, source_asset_id AS sourceAssetId, media_container AS mediaContainer, media_video_codec AS mediaVideoCodec, media_source_audio_codec AS mediaSourceAudioCodec, media_width AS mediaWidth, media_height AS mediaHeight, media_duration_seconds AS mediaDurationSeconds, audio_codec AS audioCodec, audio_sample_rate AS audioSampleRate, audio_channels AS audioChannels, audio_size_bytes AS audioSizeBytes, media_verified_at AS mediaVerifiedAt, transcript_model AS transcriptModel, transcript_language AS transcriptLanguage, transcript_segment_count AS transcriptSegmentCount, transcript_size_bytes AS transcriptSizeBytes, transcript_sha256 AS transcriptSha256, transcript_verified_at AS transcriptVerifiedAt, title, status, progress, stage, error_code AS errorCode, created_at AS createdAt, updated_at AS updatedAt FROM jobs WHERE user_id = ?1 ORDER BY created_at DESC LIMIT ?2",
+    "SELECT id, source_url AS sourceUrl, CASE WHEN source_mode = 'upload' THEN 'upload' ELSE source_provider END AS sourcePlatform, source_provider AS sourceProvider, source_mode AS sourceMode, source_type AS sourceType, source_id AS sourceId, source_duration_seconds AS sourceDurationSeconds, source_published_at AS sourcePublishedAt, source_verified_at AS sourceVerifiedAt, source_asset_id AS sourceAssetId, media_container AS mediaContainer, media_video_codec AS mediaVideoCodec, media_source_audio_codec AS mediaSourceAudioCodec, media_width AS mediaWidth, media_height AS mediaHeight, media_duration_seconds AS mediaDurationSeconds, audio_codec AS audioCodec, audio_sample_rate AS audioSampleRate, audio_channels AS audioChannels, audio_size_bytes AS audioSizeBytes, media_verified_at AS mediaVerifiedAt, transcript_model AS transcriptModel, transcript_language AS transcriptLanguage, transcript_segment_count AS transcriptSegmentCount, transcript_size_bytes AS transcriptSizeBytes, transcript_sha256 AS transcriptSha256, transcript_verified_at AS transcriptVerifiedAt, title, status, progress, stage, error_code AS errorCode, created_at AS createdAt, updated_at AS updatedAt FROM jobs WHERE user_id = ?1 ORDER BY created_at DESC LIMIT ?2",
   )
     .bind(user.id, limit)
     .all();
@@ -1486,7 +1514,7 @@ apiRoutes.get("/jobs", async (c) => {
 
 apiRoutes.get("/jobs/:jobId", async (c) => {
   const job = await c.env.DB.prepare(
-    "SELECT id, source_url AS sourceUrl, CASE WHEN source_mode = 'upload' THEN 'upload' ELSE source_platform END AS sourcePlatform, source_mode AS sourceMode, source_type AS sourceType, source_id AS sourceId, source_duration_seconds AS sourceDurationSeconds, source_published_at AS sourcePublishedAt, source_verified_at AS sourceVerifiedAt, source_asset_id AS sourceAssetId, media_container AS mediaContainer, media_video_codec AS mediaVideoCodec, media_source_audio_codec AS mediaSourceAudioCodec, media_width AS mediaWidth, media_height AS mediaHeight, media_duration_seconds AS mediaDurationSeconds, audio_codec AS audioCodec, audio_sample_rate AS audioSampleRate, audio_channels AS audioChannels, audio_size_bytes AS audioSizeBytes, media_verified_at AS mediaVerifiedAt, transcript_model AS transcriptModel, transcript_language AS transcriptLanguage, transcript_segment_count AS transcriptSegmentCount, transcript_size_bytes AS transcriptSizeBytes, transcript_sha256 AS transcriptSha256, transcript_verified_at AS transcriptVerifiedAt, title, status, progress, stage, error_code AS errorCode, created_at AS createdAt, updated_at AS updatedAt FROM jobs WHERE id = ?1 AND user_id = ?2",
+    "SELECT id, source_url AS sourceUrl, CASE WHEN source_mode = 'upload' THEN 'upload' ELSE source_provider END AS sourcePlatform, source_provider AS sourceProvider, source_mode AS sourceMode, source_type AS sourceType, source_id AS sourceId, source_duration_seconds AS sourceDurationSeconds, source_published_at AS sourcePublishedAt, source_verified_at AS sourceVerifiedAt, source_asset_id AS sourceAssetId, media_container AS mediaContainer, media_video_codec AS mediaVideoCodec, media_source_audio_codec AS mediaSourceAudioCodec, media_width AS mediaWidth, media_height AS mediaHeight, media_duration_seconds AS mediaDurationSeconds, audio_codec AS audioCodec, audio_sample_rate AS audioSampleRate, audio_channels AS audioChannels, audio_size_bytes AS audioSizeBytes, media_verified_at AS mediaVerifiedAt, transcript_model AS transcriptModel, transcript_language AS transcriptLanguage, transcript_segment_count AS transcriptSegmentCount, transcript_size_bytes AS transcriptSizeBytes, transcript_sha256 AS transcriptSha256, transcript_verified_at AS transcriptVerifiedAt, title, status, progress, stage, error_code AS errorCode, created_at AS createdAt, updated_at AS updatedAt FROM jobs WHERE id = ?1 AND user_id = ?2",
   )
     .bind(c.req.param("jobId"), c.get("user").id)
     .first();
