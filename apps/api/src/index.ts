@@ -728,12 +728,16 @@ app.use("/api/*", async (c, next) => {
       // Claim the code and create the user in one D1 transaction. If the
       // two-user trigger or a uniqueness constraint rejects user creation,
       // the invite claim rolls back too and the code is not accidentally burned.
-      await c.env.DB.batch([
-        c.env.DB.prepare("INSERT INTO invite_claims (invite_hash, auth_subject) VALUES (?1, ?2) ON CONFLICT(invite_hash) DO NOTHING")
-          .bind(hash, subject),
-        c.env.DB.prepare("INSERT INTO users (id, auth_subject, email, display_name) SELECT ?1, ?2, ?3, ?4 WHERE EXISTS (SELECT 1 FROM invite_claims WHERE invite_hash = ?5 AND auth_subject = ?2) ON CONFLICT(auth_subject) DO NOTHING")
-          .bind(uuid(), subject, email, typeof payload.name === "string" ? payload.name.slice(0, 100) : null, hash),
-      ]);
+      try {
+        await c.env.DB.batch([
+          c.env.DB.prepare("INSERT INTO invite_claims (invite_hash, auth_subject) VALUES (?1, ?2) ON CONFLICT(invite_hash) DO NOTHING")
+            .bind(hash, subject),
+          c.env.DB.prepare("INSERT INTO users (id, auth_subject, email, display_name) SELECT ?1, ?2, ?3, ?4 WHERE EXISTS (SELECT 1 FROM invite_claims WHERE invite_hash = ?5 AND auth_subject = ?2) ON CONFLICT(auth_subject) DO NOTHING")
+            .bind(uuid(), subject, email, typeof payload.name === "string" ? payload.name.slice(0, 100) : null, hash),
+        ]);
+      } catch {
+        return jsonError(c, "This invite could not be claimed. It may already be used, or both account slots may be full.", 409);
+      }
 
       const claim = await c.env.DB.prepare("SELECT auth_subject AS authSubject FROM invite_claims WHERE invite_hash = ?1")
         .bind(hash).first<{ authSubject: string }>();
