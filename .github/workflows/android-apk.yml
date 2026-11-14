@@ -1,8 +1,9 @@
-
 name: Build ClipForge Android APK
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
 
@@ -17,7 +18,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
 
       - uses: actions/setup-java@v4
         with:
@@ -28,20 +31,18 @@ jobs:
         working-directory: apps/web
         run: npm install
 
-      - name: Install Capacitor
+      - name: Build web assets
         working-directory: apps/web
-        run: npm install @capacitor/core @capacitor/cli @capacitor/android
-
-      - name: Build web
-        working-directory: apps/web
+        env:
+          VITE_CLIPFORGE_API_BASE_URL: https://clipforge-api.prasunmukherjeeee28.workers.dev
         run: npm run build
 
-      - name: Setup Android
+      - name: Generate Android project
         working-directory: apps/web
         run: |
-          npx cap init ClipForge com.clipforge.app --web-dir dist
           npx cap add android
           npx cap sync android
+          node scripts/configure-android.mjs
 
           cat >> android/build.gradle <<'EOF'
           allprojects {
@@ -64,3 +65,4 @@ jobs:
         with:
           name: ClipForge-APK
           path: apps/web/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
