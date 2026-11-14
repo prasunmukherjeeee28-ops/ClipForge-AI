@@ -60,7 +60,7 @@ describe("Worker secret preflight", () => {
       { name: "PROCESSOR_SHARED_SECRET", type: "secret_text" },
       { name: "B2_ACCESS_KEY_ID", type: "secret_text" },
       { name: "B2_SECRET_ACCESS_KEY", type: "secret_text" },
-    ]))).toEqual([]);
+    ]))).toEqual(["Missing Worker secret: INVITE_CODES."]);
   });
 
   it("reports exactly which secret names are missing", () => {
