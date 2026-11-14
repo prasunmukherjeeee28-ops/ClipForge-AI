@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "node scripts/deploy-preflight.mjs && npm run build:web && wrangler d1 migrations apply clipforge-app-db --remote && wrangler deploy",
+    "deploy": "node scripts/deploy-preflight.mjs && npm run verify:secrets && npm run build:web && wrangler d1 migrations apply clipforge-app-db --remote && wrangler deploy",
     "typecheck": "tsc --noEmit",
     "build:web": "npm --prefix ../web install && npm --prefix ../web run build",
     "test": "vitest run",
