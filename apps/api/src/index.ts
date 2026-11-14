@@ -12,7 +12,7 @@ type Bindings = {
   B2_SECRET_ACCESS_KEY?: string;
   ACCESS_TEAM_DOMAIN: string;
   ACCESS_AUD: string;
-  ALLOWED_EMAILS: string;
+  INVITE_CODES?: string;
   PROCESSOR_SHARED_SECRET?: string;
 };
 
@@ -130,12 +130,12 @@ function jsonError(c: AppContext, message: string, status: 400 | 401 | 403 | 404
   return c.json({ error: { message } }, status);
 }
 
-function allowedEmails(env: Bindings): Set<string> {
-  return new Set(
-    env.ALLOWED_EMAILS.split(",")
-      .map((email) => email.trim().toLowerCase())
-      .filter(Boolean),
-  );
+function inviteCodes(env: Bindings): string[] {
+  try {
+    const parsed: unknown = JSON.parse(env.INVITE_CODES || "");
+    return Array.isArray(parsed) && parsed.length === 2 &&
+      parsed.every((code) => typeof code === "string" && code.length >= 32) ? parsed : [];
+  } catch { return []; }
 }
 
 function sourcePlatform(value: string): "youtube" | "twitch" | null {
@@ -696,71 +696,55 @@ app.post("/internal/processor/complete", async (c) => {
 app.use("/api/*", async (c, next) => {
   const domain = c.env.ACCESS_TEAM_DOMAIN.replace(/^https?:\/\//, "").replace(/\/$/, "");
   const audience = c.env.ACCESS_AUD;
-  const emails = allowedEmails(c.env);
-
   if (!domain || domain.startsWith("YOUR_") || !audience || audience.startsWith("SET_")) {
     return jsonError(c, "Authentication is not configured.", 503);
   }
-  if (emails.size !== 2) {
-    return jsonError(c, "Configure exactly two allowed account emails.", 503);
-  }
-
   const assertion = c.req.header("Cf-Access-Jwt-Assertion");
   if (!assertion) return jsonError(c, "Authentication required.", 401);
-
   try {
     const issuer = `https://${domain}`;
     const jwks = createRemoteJWKSet(new URL(`${issuer}/cdn-cgi/access/certs`));
     const { payload } = await jwtVerify(assertion, jwks, { issuer, audience });
     const subject = typeof payload.sub === "string" ? payload.sub : "";
     const email = typeof payload.email === "string" ? payload.email.toLowerCase() : "";
+    if (!subject || !email) return jsonError(c, "Google account identity is incomplete.", 403);
 
-    if (!subject || !email || !emails.has(email)) {
-      return jsonError(c, "This account is not authorized to use ClipForge.", 403);
+    const emailOwner = await c.env.DB.prepare("SELECT auth_subject AS authSubject FROM users WHERE email = ?1 LIMIT 1")
+      .bind(email).first<{ authSubject: string }>();
+    if (emailOwner && emailOwner.authSubject !== subject) return jsonError(c, "This email is already linked to another ClipForge account.", 403);
+
+    let user = await c.env.DB.prepare("SELECT id, email FROM users WHERE auth_subject = ?1 LIMIT 1")
+      .bind(subject).first<{ id: string; email: string }>();
+    if (!user) {
+      const codes = inviteCodes(c.env);
+      if (codes.length !== 2) return jsonError(c, "Two invite codes are not configured yet.", 503);
+      const supplied = c.req.header("X-ClipForge-Invite") ?? "";
+      if (supplied.length < 32 || supplied.length > 256) return jsonError(c, "A one-time invite code is required to claim an account.", 403);
+      const hash = await sha256Hex(supplied);
+      const hashes = await Promise.all(codes.map((code) => sha256Hex(code)));
+      if (!hashes.includes(hash)) return jsonError(c, "That invite code is invalid.", 403);
+
+      await c.env.DB.prepare("INSERT INTO invite_claims (invite_hash, auth_subject) VALUES (?1, ?2) ON CONFLICT(invite_hash) DO NOTHING")
+        .bind(hash, subject).run();
+      const claim = await c.env.DB.prepare("SELECT auth_subject AS authSubject FROM invite_claims WHERE invite_hash = ?1")
+        .bind(hash).first<{ authSubject: string }>();
+      if (!claim || claim.authSubject !== subject) return jsonError(c, "That invite code has already been used.", 403);
+
+      const otherClaim = await c.env.DB.prepare("SELECT invite_hash FROM invite_claims WHERE auth_subject = ?1 AND invite_hash != ?2 LIMIT 1")
+        .bind(subject, hash).first();
+      const count = await c.env.DB.prepare("SELECT COUNT(*) AS count FROM users").first<{ count: number }>();
+      if (otherClaim || (count?.count ?? 0) >= 2) return jsonError(c, "Both ClipForge account slots are already claimed.", 403);
+
+      await c.env.DB.prepare("INSERT INTO users (id, auth_subject, email, display_name) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(auth_subject) DO NOTHING")
+        .bind(uuid(), subject, email, typeof payload.name === "string" ? payload.name.slice(0, 100) : null).run();
+      user = await c.env.DB.prepare("SELECT id, email FROM users WHERE auth_subject = ?1 LIMIT 1")
+        .bind(subject).first<{ id: string; email: string }>();
+      if (!user) return jsonError(c, "Could not initialize account.", 500);
+    } else if (user.email !== email) {
+      await c.env.DB.prepare("UPDATE users SET email = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2")
+        .bind(email, user.id).run();
     }
-
-    const emailOwner = await c.env.DB.prepare(
-      "SELECT auth_subject AS authSubject FROM users WHERE email = ?1 LIMIT 1",
-    ).bind(email).first<{ authSubject: string }>();
-    if (emailOwner && emailOwner.authSubject !== subject) {
-      return jsonError(c, "This email is already linked to another ClipForge account.", 403);
-    }
-
-    const existing = await c.env.DB.prepare(
-      "SELECT id, email FROM users WHERE auth_subject = ?1 LIMIT 1",
-    )
-      .bind(subject)
-      .first<{ id: string; email: string }>();
-
-    let userId = existing?.id;
-    if (!userId) {
-      const proposedId = uuid();
-      await c.env.DB.prepare(
-        "INSERT INTO users (id, auth_subject, email, display_name) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(auth_subject) DO NOTHING",
-      )
-        .bind(
-          proposedId,
-          subject,
-          email,
-          typeof payload.name === "string" ? payload.name.slice(0, 100) : null,
-        )
-        .run();
-      const inserted = await c.env.DB.prepare(
-        "SELECT id FROM users WHERE auth_subject = ?1 LIMIT 1",
-      )
-        .bind(subject)
-        .first<{ id: string }>();
-      if (!inserted) return jsonError(c, "Could not initialize account.", 500);
-      userId = inserted.id;
-    } else if (existing && existing.email !== email) {
-      await c.env.DB.prepare(
-        "UPDATE users SET email = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
-      )
-        .bind(email, userId)
-        .run();
-    }
-
-    c.set("user", { id: userId, email, subject });
+    c.set("user", { id: user.id, email, subject });
     await next();
   } catch {
     return jsonError(c, "Invalid or expired authentication token.", 401);
