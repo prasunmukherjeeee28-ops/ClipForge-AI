@@ -65,9 +65,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     headers,
   });
   const raw = await response.text();
-  let payload: ({ error?: { message?: string } } & Record<string, unknown>) | null = null;
+  type ApiPayload = { error?: { message?: string } } & Record<string, unknown>;
+  let payload: ApiPayload | null = null;
   try {
-    payload = raw ? JSON.parse(raw) as typeof payload : null;
+    if (raw) payload = JSON.parse(raw) as ApiPayload;
   } catch {
     if (raw.trimStart().startsWith("<")) {
       throw new Error("ClipForge returned an HTML page instead of API data. Check the app's API connection and Cloudflare mobile access route.");
