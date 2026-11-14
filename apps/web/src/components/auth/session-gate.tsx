@@ -73,6 +73,7 @@ export function SessionGate({ children }: { children: ReactNode }) {
         callbackInProgress = true;
         try {
           const result = await handleMobileAuthCallback(url);
+          if (!result) callbackInProgress = false;
           applyMobileResult(result);
         } catch (error) {
           if (active) setSession({
