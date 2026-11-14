@@ -43,13 +43,28 @@ const PART_BYTES = 8 * 1024 * 1024;
 
 function isSupportedSourceUrl(value: string): boolean {
   try {
-    const url = new URL(value);
-    if (url.protocol !== "https:" || url.username || url.password || url.port) return false;
+    const url = new URL(value.trim());
+    if (url.protocol !== "https:" || url.username || url.password || url.port || url.hash) return false;
     const host = url.hostname.toLowerCase();
+    const parts = url.pathname.split("/").filter(Boolean);
+
     if (["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"].includes(host)) {
-      return true;
+      const videoId = host === "youtu.be"
+        ? (parts.length === 1 ? parts[0] : null)
+        : url.pathname === "/watch"
+          ? url.searchParams.get("v")
+          : (["shorts", "live", "embed"].includes(parts[0] ?? "") && parts.length === 2 ? parts[1] : null);
+      return !!videoId && /^[A-Za-z0-9_-]{11}$/.test(videoId);
     }
-    return ["twitch.tv", "www.twitch.tv", "m.twitch.tv"].includes(host);
+    if (["twitch.tv", "www.twitch.tv", "m.twitch.tv"].includes(host)) {
+      return parts.length === 2 && parts[0].toLowerCase() === "videos" && /^[0-9]{1,20}$/.test(parts[1]);
+    }
+    if (["kick.com", "www.kick.com"].includes(host)) {
+      return parts.length === 3 && /^[A-Za-z0-9_-]{1,100}$/.test(parts[0]) &&
+        parts[1].toLowerCase() === "videos" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(parts[2]);
+    }
+    return false;
   } catch {
     return false;
   }
@@ -63,6 +78,7 @@ export function UploadPage() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [sourceUrl, setSourceUrl] = useState("");
   const [rightsConfirmed, setRightsConfirmed] = useState(false);
+  const [captionsEnabled, setCaptionsEnabled] = useState(true);
   const [progress, setProgress] = useState(0);
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -119,7 +135,7 @@ export function UploadPage() {
   const startUrlJob = useCallback(async () => {
     const normalizedUrl = sourceUrl.trim();
     if (!isSupportedSourceUrl(normalizedUrl)) {
-      setError("Enter a supported HTTPS YouTube video or Twitch VOD URL.");
+      setError("Enter one YouTube video, Twitch VOD, or Kick VOD URL.");
       return;
     }
     if (!rightsConfirmed) {
@@ -129,14 +145,14 @@ export function UploadPage() {
     setError(null);
     setPhase("uploading");
     try {
-      const job = await createSourceJob(normalizedUrl, true);
+      const job = await createSourceJob(normalizedUrl, true, { captions: captionsEnabled });
       setSubmittedJobId(job.id);
       setPhase("submitted");
     } catch (cause) {
       setPhase("idle");
       setError(cause instanceof Error ? cause.message : "The video link could not be submitted.");
     }
-  }, [sourceUrl, rightsConfirmed]);
+  }, [sourceUrl, rightsConfirmed, captionsEnabled]);
 
   const startFileUpload = useCallback(async () => {
     if (!file) {
@@ -189,7 +205,7 @@ export function UploadPage() {
         await completeSourceAsset(assetId);
       }
 
-      const job = await createUploadJob(assetId, true);
+      const job = await createUploadJob(assetId, true, { captions: captionsEnabled });
       setSession({ ...active, jobId: job.id });
       setProgress(100);
       setSubmittedJobId(job.id);
@@ -198,7 +214,7 @@ export function UploadPage() {
       setPhase("idle");
       setError(cause instanceof Error ? cause.message : "The video could not be uploaded. Retry to resume confirmed parts.");
     }
-  }, [file, rightsConfirmed, session]);
+  }, [file, rightsConfirmed, session, captionsEnabled]);
 
   const busy = phase === "uploading";
 
@@ -256,7 +272,7 @@ export function UploadPage() {
               spellCheck={false}
             />
             <p className="mt-2 text-xs text-zinc-500">
-              Supported currently: public YouTube videos and Twitch VODs. Private, live or restricted sources may not be available for import.
+              Supported currently: public YouTube videos, Twitch VODs and Kick VODs. Live, private, subscriber-only or age-restricted sources are not importable.
             </p>
           </div>
           <label className="flex items-start gap-3 rounded-lg border border-white/[0.08] bg-white/[0.02] p-3 text-xs leading-relaxed text-zinc-400">
@@ -409,30 +425,51 @@ export function UploadPage() {
         <div className="flex items-start gap-2">
           <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-violet-350" />
           <p className="text-xs leading-relaxed text-zinc-500">
-            Only process videos you own or are authorized to use. ClipForge imports public supported VOD links without signing into someone else's account; restricted or unavailable media must be provided through an authorized export.
+            Only process videos you own or are authorized to use. ClipForge does not sign into another creator's account or bypass private/subscriber-only access. For a Kick VOD you own, use Kick's creator download or provide an authorized export if the link cannot be imported.
           </p>
         </div>
       </div>
 
       <Card className="h-fit">
-        <CardHeader title="Processing defaults" description="Applied to every VOD job" />
-        <div className="space-y-1 px-3 pb-5">
-          {[
-            { icon: Subtitles, label: "Burned-in captions", desc: "Transcript captions are added to finished clips" },
-            { icon: Sparkles, label: "AI moment detection", desc: "The processor scores moments and selects clip candidates" },
-            { icon: Scissors, label: "9:16 vertical export", desc: "Every finished clip uses the vertical format" },
-          ].map(({ icon: Icon, label, desc }) => (
-            <div key={label} className="flex items-center gap-3 rounded-lg px-2 py-3">
-              <span className="glass flex h-8 w-8 shrink-0 items-center justify-center rounded-lg">
-                <Icon className="h-4 w-4 text-violet-350" />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-medium text-zinc-200">{label}</p>
-                <p className="text-xs leading-snug text-zinc-500">{desc}</p>
-              </div>
-              <Badge tone="green">On</Badge>
-            </div>
-          ))}
+        <CardHeader title="Clip settings" description="Choose the output options for this job" />
+        <div className="space-y-2 px-3 pb-5">
+          <label className="flex cursor-pointer items-center gap-3 rounded-lg px-2 py-3 hover:bg-white/[0.03]">
+            <span className="glass flex h-8 w-8 shrink-0 items-center justify-center rounded-lg">
+              <Subtitles className="h-4 w-4 text-violet-350" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[13px] font-medium text-zinc-200">Burned-in captions</span>
+              <span className="block text-xs leading-snug text-zinc-500">Add synchronized captions to each exported clip</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={captionsEnabled}
+              onChange={(event) => setCaptionsEnabled(event.target.checked)}
+              disabled={busy || phase === "submitted"}
+              className="h-5 w-5 shrink-0 accent-violet-500"
+              aria-label="Burned-in captions"
+            />
+          </label>
+          <div className="flex items-center gap-3 rounded-lg px-2 py-3">
+            <span className="glass flex h-8 w-8 shrink-0 items-center justify-center rounded-lg">
+              <Sparkles className="h-4 w-4 text-violet-350" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[13px] font-medium text-zinc-200">AI moment detection</span>
+              <span className="block text-xs leading-snug text-zinc-500">Required to identify candidate highlights</span>
+            </span>
+            <Badge tone="zinc">Required</Badge>
+          </div>
+          <div className="flex items-center gap-3 rounded-lg px-2 py-3">
+            <span className="glass flex h-8 w-8 shrink-0 items-center justify-center rounded-lg">
+              <Scissors className="h-4 w-4 text-violet-350" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[13px] font-medium text-zinc-200">Vertical export</span>
+              <span className="block text-xs leading-snug text-zinc-500">Finished clips are currently exported in 9:16</span>
+            </span>
+            <Badge tone="zinc">Fixed 9:16</Badge>
+          </div>
         </div>
       </Card>
     </div>
