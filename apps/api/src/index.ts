@@ -1169,11 +1169,13 @@ apiRoutes.post("/source-assets", async (c) => {
       customMetadata: { assetId, userId: user.id },
     });
   } catch (error) {
+    const diagnosticId = uuid();
     console.error("ClipForge private source multipart initialization failed.", {
+      diagnosticId,
       name: error instanceof Error ? error.name : "UnknownError",
       message: error instanceof Error ? error.message.slice(0, 500) : "Unknown storage error",
     });
-    return jsonError(c, "Private source storage is temporarily unavailable. The server has recorded a diagnostic reference.", 503);
+    return jsonError(c, "Private source storage is temporarily unavailable. Diagnostic reference: " + diagnosticId, 503);
   }
 
   try {
@@ -1411,7 +1413,7 @@ apiRoutes.post("/jobs", async (c) => {
 
   const parsed = urls.map((url) => ({ url, platform: sourcePlatform(url) }));
   if (parsed.some((item) => item.platform === null)) {
-    return jsonError(c, "Only supported HTTPS YouTube videos and Twitch VODs are accepted.", 400);
+    return jsonError(c, "Only one supported HTTPS YouTube video, Twitch VOD, or Kick VOD URL is accepted per item.", 400);
   }
 
   const options =
