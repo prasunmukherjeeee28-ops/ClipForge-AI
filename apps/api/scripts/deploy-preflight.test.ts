@@ -66,6 +66,7 @@ describe("Worker secret preflight", () => {
   it("reports exactly which secret names are missing", () => {
     expect(validateSecretList(JSON.stringify([{ name: "B2_ACCESS_KEY_ID" }]))).toEqual([
       "Missing Worker secret: PROCESSOR_SHARED_SECRET.",
+      "Missing Worker secret: B2_ACCESS_KEY_ID.",
       "Missing Worker secret: B2_SECRET_ACCESS_KEY.",
       "Missing Worker secret: INVITE_CODES.",
     ]);
