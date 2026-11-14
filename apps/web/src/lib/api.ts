@@ -1,4 +1,10 @@
-const API_BASE = (import.meta.env.VITE_CLIPFORGE_API_BASE_URL ?? "").replace(/\/+$/, "");
+const API_BASE = getApiBase();
+
+import { getApiBase, getMobileSessionToken, isNativePlatform } from "./platform";
+
+function apiPath(path: string): string {
+  return isNativePlatform() ? path.replace(/^\/api(?=\/|$)/, "/mobile/v1/api") : path;
+}
 
 export interface CurrentUser {
   id: string;
@@ -41,29 +47,43 @@ export interface SourceAssetState {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    credentials: "include",
-    headers: {
-      ...(init.body instanceof Blob ? {} : { "Content-Type": "application/json" }),
-      ...init.headers,
-    },
-  });
-
-  const payload = await response.json().catch(() => null) as
-    | { error?: { message?: string } }
-    | T
-    | null;
-
-  if (!response.ok) {
-    const message =
-      payload && typeof payload === "object" && "error" in payload
-        ? payload.error?.message
-        : undefined;
-    throw new ApiRequestError(message || `ClipForge API request failed (${response.status}).`, response.status);
+  const native = isNativePlatform();
+  const token = native ? await getMobileSessionToken() : null;
+  if (native && !token) {
+    throw new ApiRequestError("Sign in to your private ClipForge account first.", 401);
   }
 
-  if (payload === null) throw new Error("The ClipForge API returned an empty response.");
+  const headers = new Headers(init.headers);
+  if (!(init.body instanceof Blob) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  if (token) headers.set("Authorization", "Bearer " + token);
+
+  const response = await fetch(API_BASE + apiPath(path), {
+    ...init,
+    credentials: native ? "omit" : "include",
+    headers,
+  });
+  const raw = await response.text();
+  let payload: ({ error?: { message?: string } } & Record<string, unknown>) | null = null;
+  try {
+    payload = raw ? JSON.parse(raw) as typeof payload : null;
+  } catch {
+    if (raw.trimStart().startsWith("<")) {
+      throw new Error("ClipForge returned an HTML page instead of API data. Check the app's API connection and Cloudflare mobile access route.");
+    }
+  }
+
+  if (!response.ok) {
+    const message = payload && typeof payload.error === "object"
+      ? payload.error?.message
+      : undefined;
+    throw new ApiRequestError(message || "ClipForge API request failed (" + response.status + ").", response.status);
+  }
+
+  if (payload === null) {
+    throw new Error("ClipForge API returned an empty or unreadable response.");
+  }
   return payload as T;
 }
 
@@ -192,6 +212,20 @@ export interface JobRecord {
   errorCode: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+
+export interface ClipMediaUrls {
+  previewUrl: string;
+  downloadUrl: string;
+  expiresInSeconds: number;
+}
+
+export async function createClipMediaUrls(clipId: string): Promise<ClipMediaUrls> {
+  return request<ClipMediaUrls>(
+    "/api/clips/" + encodeURIComponent(clipId) + "/media-url",
+    { method: "POST", body: JSON.stringify({}) },
+  );
 }
 
 export async function getClips(): Promise<ClipRecord[]> {
