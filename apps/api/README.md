@@ -60,13 +60,13 @@ The Worker serves both the Vite frontend (`apps/web/dist`) and the Hono API from
 4. Set `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` to the actual Access team domain and application audience. Configure Google as the allowed identity provider in the Cloudflare Access application.
 5. Set the Worker secret `PROCESSOR_SHARED_SECRET` to a random value of at least 32 characters. Supply the same value only to the private processor host.
 6. The existing migrations `0001`–`0009` are already applied to `clipforge-app-db`. The deploy command applies any pending migrations, including `0010_invite_claims.sql`, before deploying the Worker.
-7. Run `npm install` and `npm run typecheck` in this directory. Set the two configured email identities and Access values without committing private addresses or secrets. Then run `npm run deploy` only after all bindings, secrets and Access settings are correct.
+7. Run `npm install` and `npm run typecheck` in this directory. Confirm the Access domain/audience and configure the four Worker secrets. Then run `npm run deploy` only after all bindings, secrets and Access settings are correct.
 
 Do not deploy with placeholder Access settings. Keep Backblaze B2 object storage private. B2 buckets are versioned: a normal S3 `DeleteObject` creates a delete marker rather than immediately erasing every older version. Configure a lifecycle rule to expire noncurrent versions after a short retention period (for example, one day) and abort incomplete multipart uploads after a short period. Treat app-level deletion as immediately hidden from users, but not as immediate physical erasure until the lifecycle policy runs. Never put credentials in this file, `wrangler.toml`, GitHub source, frontend variables or a committed environment file.
 
 ## Deployment preflight
 
-Before deployment, replace every placeholder in `wrangler.toml` with the real Cloudflare Access hostname, application audience, exactly two distinct allowed email addresses, and the Backblaze B2 region, endpoint and private bucket name. The deploy command runs `scripts/deploy-preflight.mjs` first and stops before building or deploying if those values are missing, placeholders, malformed, or point at the wrong D1 database. The check validates configuration syntax; it cannot prove that the Access application or B2 bucket exists.
+Before deployment, verify the Cloudflare Access hostname and application audience, and the Backblaze B2 region, endpoint and private bucket name in `wrangler.toml`. The deploy command runs `scripts/deploy-preflight.mjs` first and stops before building or deploying if those values are missing, placeholders, malformed, or point at the wrong D1 database. The check validates configuration syntax; it cannot prove that the Access application or B2 bucket exists.
 
 The static configuration check runs automatically. The deploy command also applies unapplied D1 migrations remotely before deploying the Worker:
 
@@ -84,7 +84,7 @@ npx wrangler secret put INVITE_CODES
 npm run verify:secrets
 ```
 
-`verify:secrets` checks only secret names and never prints their values. Set the same `PROCESSOR_SHARED_SECRET` in the isolated processor host environment. Do not start the processor or accept media jobs until the private B2 bucket, restricted B2 key, Access policy and all three Worker secrets are configured and independently verified.
+`verify:secrets` checks only secret names and never prints their values. Set the same `PROCESSOR_SHARED_SECRET` in the isolated processor host environment. Do not start the processor or accept media jobs until the private B2 bucket, restricted B2 key, Access policy and all four Worker secrets are configured and independently verified.
 ## Processor deployment
 
 The separate Python processor has its own Docker image and single-instance Compose service. See `services/processor/README.md`. The processor is deliberately not deployed as a Cloudflare Worker because FFmpeg and faster-whisper require a normal Linux runtime and persistent local scratch/model storage.
