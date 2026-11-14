@@ -1,6 +1,6 @@
-const API_BASE = getApiBase();
-
 import { getApiBase, getMobileSessionToken, isNativePlatform } from "./platform";
+
+const API_BASE = getApiBase();
 
 function apiPath(path: string): string {
   return isNativePlatform() ? path.replace(/^\/api(?=\/|$)/, "/mobile/v1/api") : path;
