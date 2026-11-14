@@ -279,7 +279,14 @@ async def run_once() -> int:
         if source_mode not in {"url", "upload"}:
             raise RuntimeError("unsupported_source_mode")
         source_asset_id = job.get("sourceAssetId") or f"url-{job_id}"
-        lease_id = lease["leaseId"
+        lease_id = lease["leaseId"]
+        try:
+            job_options = json.loads(job.get("optionsJson") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            job_options = {}
+        if not isinstance(job_options, dict):
+            job_options = {}
+        captions_enabled = job_options.get("captions") is not False
         lease_token = lease["leaseToken"]
         stop_heartbeat = asyncio.Event()
         cancelled = asyncio.Event()
@@ -520,6 +527,7 @@ async def run_once() -> int:
                             timeout_seconds=min(settings.ffmpeg_timeout_seconds, 3600),
                             max_output_bytes=500_000_000,
                             threads=settings.ffmpeg_threads,
+                            captions_enabled=captions_enabled,
                             cancel_event=render_cancel,
                         ),
                         cancelled,
