@@ -47,6 +47,7 @@ function storage(c: AppContext): ObjectStore {
   throw new Error("Private object storage is not configured.");
 }
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
+const apiRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 const uuid = () => crypto.randomUUID();
 const encoder = new TextEncoder();
 const SOURCE_ASSET_PART_BYTES = 8 * 1024 * 1024;
@@ -771,11 +772,352 @@ app.use("/api/*", async (c, next) => {
   }
 });
 
-app.get("/api/me", (c) =>
+const MOBILE_API_ORIGINS = new Set(["https://localhost"]);
+
+app.use("/mobile/v1/*", async (c, next) => {
+  const origin = c.req.header("Origin");
+  if (origin && !MOBILE_API_ORIGINS.has(origin)) {
+    return jsonError(c, "Origin is not allowed for the ClipForge mobile API.", 403);
+  }
+  if (c.req.method === "OPTIONS") {
+    const headers = new Headers({
+      "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "Access-Control-Allow-Headers": "Authorization, Content-Type",
+      "Access-Control-Max-Age": "600",
+      "Vary": "Origin",
+    });
+    if (origin) headers.set("Access-Control-Allow-Origin", origin);
+    return new Response(null, { status: 204, headers });
+  }
+  await next();
+  const headers = new Headers(c.res.headers);
+  if (origin) {
+    headers.set("Access-Control-Allow-Origin", origin);
+    headers.append("Vary", "Origin");
+  }
+  headers.set("Cache-Control", headers.get("Cache-Control") ?? "no-store");
+  c.res = new Response(c.res.body, {
+    status: c.res.status,
+    statusText: c.res.statusText,
+    headers,
+  });
+});
+
+app.use("/mobile/v1/api/*", async (c, next) => {
+  const authorization = c.req.header("Authorization") ?? "";
+  const match = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(authorization);
+  if (!match) return jsonError(c, "A valid ClipForge mobile session is required.", 401);
+
+  const tokenHash = await sha256Hex(match[1]);
+  const user = await c.env.DB.prepare(
+    "SELECT users.id, users.email, users.auth_subject AS subject FROM mobile_sessions INNER JOIN users ON users.id = mobile_sessions.user_id WHERE mobile_sessions.token_hash = ?1 AND mobile_sessions.revoked_at IS NULL AND mobile_sessions.expires_at > CURRENT_TIMESTAMP",
+  ).bind(tokenHash).first<{ id: string; email: string; subject: string }>();
+  if (!user) return jsonError(c, "Your ClipForge mobile session has expired. Sign in again.", 401);
+
+  await c.env.DB.prepare(
+    "UPDATE mobile_sessions SET last_used_at = CURRENT_TIMESTAMP WHERE token_hash = ?1 AND revoked_at IS NULL",
+  ).bind(tokenHash).run();
+  c.set("user", user);
+  await next();
+});
+
+
+function randomBase64Url(byteLength = 32): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(byteLength));
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+async function sha256Base64Url(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(value));
+  const bytes = new Uint8Array(digest);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+app.get("/mobile-auth/authorize", async (c) => {
+  const challenge = c.req.query("code_challenge") ?? "";
+  const state = c.req.query("state") ?? "";
+  if (!/^[A-Za-z0-9_-]{43}$/.test(challenge) || !/^[A-Za-z0-9_-]{43}$/.test(state)) {
+    return jsonError(c, "A valid PKCE challenge and state are required.", 400);
+  }
+
+  const domain = c.env.ACCESS_TEAM_DOMAIN.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  const assertion = c.req.header("Cf-Access-Jwt-Assertion") ?? "";
+  if (!domain || !assertion) return jsonError(c, "Complete Google sign-in through Cloudflare Access first.", 401);
+
+  try {
+    const issuer = "https://" + domain;
+    const jwks = createRemoteJWKSet(new URL(issuer + "/cdn-cgi/access/certs"));
+    const { payload } = await jwtVerify(assertion, jwks, {
+      issuer,
+      audience: c.env.ACCESS_AUD,
+    });
+    const subject = typeof payload.sub === "string" ? payload.sub : "";
+    const email = typeof payload.email === "string" ? payload.email.toLowerCase() : "";
+    if (!subject || !email) return jsonError(c, "Google account identity is incomplete.", 403);
+
+    const code = randomBase64Url();
+    await c.env.DB.prepare(
+      "DELETE FROM mobile_auth_codes WHERE expires_at <= CURRENT_TIMESTAMP OR consumed_at IS NOT NULL",
+    ).run();
+    await c.env.DB.prepare(
+      "INSERT INTO mobile_auth_codes (code_hash, code_challenge, auth_subject, email, display_name, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, datetime('now', '+5 minutes'))",
+    ).bind(
+      await sha256Hex(code),
+      challenge,
+      subject,
+      email,
+      typeof payload.name === "string" ? payload.name.slice(0, 100) : null,
+    ).run();
+
+    const callback = new URL("com.clipforge.app://auth");
+    callback.searchParams.set("code", code);
+    callback.searchParams.set("state", state);
+    return c.redirect(callback.toString(), 302);
+  } catch {
+    return jsonError(c, "Cloudflare Access sign-in could not be verified.", 401);
+  }
+});
+
+app.post("/mobile/v1/auth/exchange", async (c) => {
+  const body = await c.req.json<{
+    code?: unknown;
+    verifier?: unknown;
+    inviteCode?: unknown;
+  }>().catch(() => null);
+  if (
+    typeof body?.code !== "string" || body.code.length < 40 || body.code.length > 128 ||
+    typeof body.verifier !== "string" || !/^[A-Za-z0-9._~-]{43,128}$/.test(body.verifier) ||
+    (body.inviteCode !== undefined &&
+      (typeof body.inviteCode !== "string" || body.inviteCode.length > 256))
+  ) {
+    return jsonError(c, "The mobile authentication exchange payload is invalid.", 400);
+  }
+
+  const codeHash = await sha256Hex(body.code);
+  const challenge = await sha256Base64Url(body.verifier);
+  const authCode = await c.env.DB.prepare(
+    "SELECT code_challenge AS codeChallenge, auth_subject AS subject, email, display_name AS displayName FROM mobile_auth_codes WHERE code_hash = ?1 AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP",
+  ).bind(codeHash).first<{
+    codeChallenge: string;
+    subject: string;
+    email: string;
+    displayName: string | null;
+  }>();
+  if (!authCode) return jsonError(c, "The sign-in code expired or was already used. Start Google sign-in again.", 401);
+  if (!constantTimeStringEqual(challenge, authCode.codeChallenge)) {
+    return jsonError(c, "The PKCE verifier did not match this sign-in request.", 401);
+  }
+
+  const emailOwner = await c.env.DB.prepare(
+    "SELECT auth_subject AS authSubject FROM users WHERE email = ?1 LIMIT 1",
+  ).bind(authCode.email).first<{ authSubject: string }>();
+  if (emailOwner && emailOwner.authSubject !== authCode.subject) {
+    return jsonError(c, "This email is already linked to another ClipForge account.", 409);
+  }
+
+  let user = await c.env.DB.prepare(
+    "SELECT id, email FROM users WHERE auth_subject = ?1 LIMIT 1",
+  ).bind(authCode.subject).first<{ id: string; email: string }>();
+
+  let inviteHash = "";
+  if (!user) {
+    const codes = inviteCodes(c.env);
+    if (codes.length !== 2) return jsonError(c, "Two invite codes are not configured yet.", 503);
+    const supplied = typeof body.inviteCode === "string" ? body.inviteCode.trim() : "";
+    if (!supplied) {
+      return c.json({
+        error: {
+          code: "invite_required",
+          message: "Enter the one-time invite code assigned to this Google account.",
+        },
+      }, 403);
+    }
+    if (supplied.length < 32 || supplied.length > 256) {
+      return c.json({ error: { code: "invalid_invite", message: "That invite code is invalid." } }, 403);
+    }
+    inviteHash = await sha256Hex(supplied);
+    const hashes = await Promise.all(codes.map((code) => sha256Hex(code)));
+    if (!hashes.some((candidate) => constantTimeStringEqual(candidate, inviteHash))) {
+      return c.json({ error: { code: "invalid_invite", message: "That invite code is invalid." } }, 403);
+    }
+  } else if (user.email !== authCode.email) {
+    await c.env.DB.prepare(
+      "UPDATE users SET email = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+    ).bind(authCode.email, user.id).run();
+    user = { ...user, email: authCode.email };
+  }
+
+  const sessionToken = randomBase64Url();
+  const sessionHash = await sha256Hex(sessionToken);
+  const exchangeId = uuid();
+  try {
+    const statements = [
+      c.env.DB.prepare(
+        "UPDATE mobile_auth_codes SET consumed_at = CURRENT_TIMESTAMP, exchange_id = ?1 WHERE code_hash = ?2 AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP",
+      ).bind(exchangeId, codeHash),
+    ];
+
+    if (!user) {
+      statements.push(
+        c.env.DB.prepare(
+          "INSERT INTO invite_claims (invite_hash, auth_subject) SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM mobile_auth_codes WHERE code_hash = ?3 AND exchange_id = ?4)",
+        ).bind(inviteHash, authCode.subject, codeHash, exchangeId),
+        c.env.DB.prepare(
+          "INSERT INTO users (id, auth_subject, email, display_name) SELECT ?1, ?2, ?3, ?4 WHERE EXISTS (SELECT 1 FROM mobile_auth_codes WHERE code_hash = ?5 AND exchange_id = ?6) AND EXISTS (SELECT 1 FROM invite_claims WHERE invite_hash = ?7 AND auth_subject = ?2)",
+        ).bind(uuid(), authCode.subject, authCode.email, authCode.displayName, codeHash, exchangeId, inviteHash),
+      );
+    }
+
+    statements.push(
+      c.env.DB.prepare(
+        "INSERT INTO mobile_sessions (token_hash, user_id, expires_at) SELECT ?1, users.id, datetime('now', '+30 days') FROM users WHERE users.auth_subject = ?2 AND EXISTS (SELECT 1 FROM mobile_auth_codes WHERE code_hash = ?3 AND exchange_id = ?4) AND (?5 = '' OR EXISTS (SELECT 1 FROM invite_claims WHERE invite_hash = ?5 AND auth_subject = ?2))",
+      ).bind(sessionHash, authCode.subject, codeHash, exchangeId, inviteHash),
+    );
+
+    await c.env.DB.batch(statements);
+  } catch {
+    return c.json({
+      error: {
+        code: "enrollment_conflict",
+        message: "This invite may already be used, or both private account slots may be full.",
+      },
+    }, 409);
+  }
+
+  user = await c.env.DB.prepare(
+    "SELECT id, email FROM users WHERE auth_subject = ?1 LIMIT 1",
+  ).bind(authCode.subject).first<{ id: string; email: string }>();
+  const savedSession = await c.env.DB.prepare(
+    "SELECT token_hash FROM mobile_sessions WHERE token_hash = ?1 AND revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP",
+  ).bind(sessionHash).first<{ token_hash: string }>();
+  if (!user || !savedSession) {
+    return jsonError(c, "This sign-in code was already exchanged. Start Google sign-in again.", 409);
+  }
+
+  return c.json({
+    token: sessionToken,
+    expiresInSeconds: 30 * 24 * 60 * 60,
+    user: { id: user.id, email: user.email },
+  }, 200, { "Cache-Control": "no-store" });
+});
+
+app.post("/mobile/v1/auth/logout", async (c) => {
+  const authorization = c.req.header("Authorization") ?? "";
+  const match = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(authorization);
+  if (!match) return jsonError(c, "A valid ClipForge mobile session is required.", 401);
+  const tokenHash = await sha256Hex(match[1]);
+  await c.env.DB.prepare(
+    "UPDATE mobile_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE token_hash = ?1 AND revoked_at IS NULL",
+  ).bind(tokenHash).run();
+  return c.json({ ok: true }, 200, { "Cache-Control": "no-store" });
+});
+
+app.post("/mobile/v1/api/clips/:clipId/media-url", async (c) => {
+  const user = c.get("user");
+  const clipId = c.req.param("clipId");
+  const clip = await c.env.DB.prepare(
+    "SELECT id FROM clips WHERE id = ?1 AND user_id = ?2",
+  ).bind(clipId, user.id).first<{ id: string }>();
+  if (!clip) return jsonError(c, "Clip not found.", 404);
+
+  await c.env.DB.prepare(
+    "DELETE FROM mobile_media_grants WHERE expires_at <= CURRENT_TIMESTAMP",
+  ).run();
+  const grantToken = randomBase64Url();
+  await c.env.DB.prepare(
+    "INSERT INTO mobile_media_grants (token_hash, user_id, clip_id, expires_at) VALUES (?1, ?2, ?3, datetime('now', '+5 minutes'))",
+  ).bind(await sha256Hex(grantToken), user.id, clipId).run();
+
+  const base = new URL(c.req.url).origin;
+  const mediaUrl = base + "/mobile/v1/media/" + encodeURIComponent(clipId) + "?token=" + encodeURIComponent(grantToken);
+  return c.json({
+    previewUrl: mediaUrl,
+    downloadUrl: mediaUrl + "&download=1",
+    expiresInSeconds: 300,
+  }, 200, { "Cache-Control": "no-store" });
+});
+
+app.get("/mobile/v1/media/:clipId", async (c) => {
+  const clipId = c.req.param("clipId");
+  const grantToken = c.req.query("token") ?? "";
+  if (!/^[A-Za-z0-9_-]{43}$/.test(grantToken)) return jsonError(c, "Media access expired. Request a new link.", 401);
+  const grant = await c.env.DB.prepare(
+    "SELECT user_id AS userId FROM mobile_media_grants WHERE token_hash = ?1 AND clip_id = ?2 AND expires_at > CURRENT_TIMESTAMP",
+  ).bind(await sha256Hex(grantToken), clipId).first<{ userId: string }>();
+  if (!grant) return jsonError(c, "Media access expired. Request a new link.", 401);
+
+  const clip = await c.env.DB.prepare(
+    "SELECT output_key AS outputKey, title FROM clips WHERE id = ?1 AND user_id = ?2",
+  ).bind(clipId, grant.userId).first<{ outputKey: string; title: string }>();
+  if (!clip) return jsonError(c, "Clip not found.", 404);
+
+  const metadata = await storage(c).head(clip.outputKey);
+  if (!metadata) return jsonError(c, "Clip file is unavailable.", 404);
+  const filename = clip.title.normalize("NFKC").replace(/[^a-zA-Z0-9 _-]/g, "").trim().slice(0, 80) || "clip";
+  const download = c.req.query("download") === "1";
+  const disposition = download
+    ? 'attachment; filename="' + filename + '.mp4"'
+    : "inline";
+
+  const rangeHeader = c.req.header("Range");
+  if (!rangeHeader) {
+    const object = await storage(c).get(clip.outputKey);
+    if (!object) return jsonError(c, "Clip file is unavailable.", 404);
+    return new Response(object.body, {
+      headers: {
+        "Content-Type": "video/mp4",
+        "Content-Length": String(object.size),
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": disposition,
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  }
+
+  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader);
+  if (!match || (!match[1] && !match[2]) || metadata.size <= 0) {
+    return new Response(null, {
+      status: 416,
+      headers: { "Content-Range": "bytes */" + metadata.size, "Cache-Control": "private, no-store" },
+    });
+  }
+  const size = metadata.size;
+  const start = match[1] ? Number(match[1]) : Math.max(0, size - Number(match[2]));
+  const requestedEnd = match[2] && match[1] ? Number(match[2]) : size - 1;
+  const end = Math.min(requestedEnd, size - 1);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= size || end < start) {
+    return new Response(null, {
+      status: 416,
+      headers: { "Content-Range": "bytes */" + size, "Cache-Control": "private, no-store" },
+    });
+  }
+  const object = await storage(c).get(clip.outputKey, { range: { offset: start, length: end - start + 1 } });
+  if (!object) return jsonError(c, "Clip file is unavailable.", 404);
+  return new Response(object.body, {
+    status: 206,
+    headers: {
+      "Content-Type": "video/mp4",
+      "Content-Length": String(end - start + 1),
+      "Content-Range": "bytes " + start + "-" + end + "/" + size,
+      "Accept-Ranges": "bytes",
+      "Content-Disposition": disposition,
+      "Cache-Control": "private, no-store",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+});
+
+
+apiRoutes.get("/me", (c) =>
   c.json({ user: { id: c.get("user").id, email: c.get("user").email } }),
 );
 
-app.post("/api/source-assets", async (c) => {
+apiRoutes.post("/source-assets", async (c) => {
   const body = await c.req.json<{ filename?: unknown; contentType?: unknown; sizeBytes?: unknown }>().catch(() => null);
   const contentType = typeof body?.contentType === "string" ? body.contentType : "";
   const filename = safeSourceFilename(body?.filename, contentType);
@@ -829,14 +1171,14 @@ app.post("/api/source-assets", async (c) => {
   }, 201);
 });
 
-app.get("/api/source-assets", async (c) => {
+apiRoutes.get("/source-assets", async (c) => {
   const result = await c.env.DB.prepare(
     "SELECT id, filename, content_type AS contentType, size_bytes AS sizeBytes, status, created_at AS createdAt, completed_at AS completedAt FROM source_assets WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 100",
   ).bind(c.get("user").id).all();
   return c.json({ assets: result.results });
 });
 
-app.get("/api/source-assets/:assetId", async (c) => {
+apiRoutes.get("/source-assets/:assetId", async (c) => {
   const asset = await c.env.DB.prepare(
     "SELECT id, filename, content_type AS contentType, size_bytes AS sizeBytes, status, created_at AS createdAt, completed_at AS completedAt FROM source_assets WHERE id = ?1 AND user_id = ?2",
   ).bind(c.req.param("assetId"), c.get("user").id).first();
@@ -847,7 +1189,7 @@ app.get("/api/source-assets/:assetId", async (c) => {
   return c.json({ asset, uploadedParts: parts.results });
 });
 
-app.put("/api/source-assets/:assetId/parts/:partNumber", async (c) => {
+apiRoutes.put("/source-assets/:assetId/parts/:partNumber", async (c) => {
   const assetId = c.req.param("assetId");
   const partNumber = Number(c.req.param("partNumber"));
   if (!Number.isSafeInteger(partNumber) || partNumber < 1) {
@@ -894,7 +1236,7 @@ app.put("/api/source-assets/:assetId/parts/:partNumber", async (c) => {
   return c.json({ assetId, partNumber, uploaded: true }, 201);
 });
 
-app.post("/api/source-assets/:assetId/complete", async (c) => {
+apiRoutes.post("/source-assets/:assetId/complete", async (c) => {
   const assetId = c.req.param("assetId");
   const asset = await c.env.DB.prepare(
     "SELECT object_key AS objectKey, upload_id AS uploadId, size_bytes AS sizeBytes, status FROM source_assets WHERE id = ?1 AND user_id = ?2 AND status IN ('uploading','finalizing')",
@@ -979,7 +1321,7 @@ app.post("/api/source-assets/:assetId/complete", async (c) => {
   return c.json({ assetId, status: "ready", sizeBytes: storedObject.size });
 });
 
-app.delete("/api/source-assets/:assetId", async (c) => {
+apiRoutes.delete("/source-assets/:assetId", async (c) => {
   const assetId = c.req.param("assetId");
   const userId = c.get("user").id;
   // Reserve deletion atomically before touching R2. Attachment and upload
@@ -1020,7 +1362,7 @@ app.delete("/api/source-assets/:assetId", async (c) => {
   return c.json({ assetId, deleted: true });
 });
 
-app.post("/api/jobs", async (c) => {
+apiRoutes.post("/jobs", async (c) => {
   const body = await c.req.json<{ urls?: unknown; options?: unknown }>().catch(() => null);
   if (!body || !Array.isArray(body.urls) || body.urls.length < 1 || body.urls.length > 20) {
     return jsonError(c, "Provide between 1 and 20 video or stream URLs.", 400);
@@ -1063,7 +1405,7 @@ app.post("/api/jobs", async (c) => {
   return c.json({ jobs: created }, 202);
 });
 
-app.post("/api/jobs/:jobId/source-asset", async (c) => {
+apiRoutes.post("/jobs/:jobId/source-asset", async (c) => {
   const body = await c.req.json<{ sourceAssetId?: unknown }>().catch(() => null);
   if (typeof body?.sourceAssetId !== "string" || !body.sourceAssetId.trim()) {
     return jsonError(c, "A sourceAssetId is required.", 400);
@@ -1087,7 +1429,7 @@ app.post("/api/jobs/:jobId/source-asset", async (c) => {
   return c.json({ jobId, sourceAssetId: body.sourceAssetId, status: "queued" }, 202);
 });
 
-app.get("/api/jobs", async (c) => {
+apiRoutes.get("/jobs", async (c) => {
   const user = c.get("user");
   const requestedLimit = Number(c.req.query("limit") ?? 50);
   const limit = Math.min(Math.max(Number.isFinite(requestedLimit) ? Math.trunc(requestedLimit) : 50, 1), 100);
@@ -1099,7 +1441,7 @@ app.get("/api/jobs", async (c) => {
   return c.json({ jobs: result.results });
 });
 
-app.get("/api/jobs/:jobId", async (c) => {
+apiRoutes.get("/jobs/:jobId", async (c) => {
   const job = await c.env.DB.prepare(
     "SELECT id, source_url AS sourceUrl, source_platform AS sourcePlatform, source_type AS sourceType, source_id AS sourceId, source_duration_seconds AS sourceDurationSeconds, source_published_at AS sourcePublishedAt, source_verified_at AS sourceVerifiedAt, source_asset_id AS sourceAssetId, media_container AS mediaContainer, media_video_codec AS mediaVideoCodec, media_source_audio_codec AS mediaSourceAudioCodec, media_width AS mediaWidth, media_height AS mediaHeight, media_duration_seconds AS mediaDurationSeconds, audio_codec AS audioCodec, audio_sample_rate AS audioSampleRate, audio_channels AS audioChannels, audio_size_bytes AS audioSizeBytes, media_verified_at AS mediaVerifiedAt, transcript_model AS transcriptModel, transcript_language AS transcriptLanguage, transcript_segment_count AS transcriptSegmentCount, transcript_size_bytes AS transcriptSizeBytes, transcript_sha256 AS transcriptSha256, transcript_verified_at AS transcriptVerifiedAt, title, status, progress, stage, error_code AS errorCode, created_at AS createdAt, updated_at AS updatedAt FROM jobs WHERE id = ?1 AND user_id = ?2",
   )
@@ -1109,7 +1451,7 @@ app.get("/api/jobs/:jobId", async (c) => {
   return c.json({ job });
 });
 
-app.get("/api/jobs/:jobId/moments", async (c) => {
+apiRoutes.get("/jobs/:jobId/moments", async (c) => {
   const jobId = c.req.param("jobId");
   const userId = c.get("user").id;
   const job = await c.env.DB.prepare(
@@ -1122,7 +1464,7 @@ app.get("/api/jobs/:jobId/moments", async (c) => {
   return c.json({ candidates: result.results });
 });
 
-app.post("/api/jobs/:jobId/cancel", async (c) => {
+apiRoutes.post("/jobs/:jobId/cancel", async (c) => {
   const user = c.get("user");
   const id = c.req.param("jobId");
   const result = await c.env.DB.prepare(
@@ -1147,7 +1489,7 @@ app.post("/api/jobs/:jobId/cancel", async (c) => {
   return c.json({ jobId: id, status: updated?.status ?? "processing", cancelled: true });
 });
 
-app.post("/api/jobs/cancel-all", async (c) => {
+apiRoutes.post("/jobs/cancel-all", async (c) => {
   const result = await c.env.DB.prepare(
     "UPDATE jobs SET cancel_requested = 1, status = CASE WHEN status IN ('queued','review') THEN 'cancelled' ELSE status END, stage = CASE WHEN status IN ('queued','review') THEN 'cancelled' ELSE 'cancellation_requested' END, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?1 AND (status IN ('queued','processing') OR (status = 'review' AND stage = 'awaiting_source_asset'))",
   )
@@ -1156,7 +1498,7 @@ app.post("/api/jobs/cancel-all", async (c) => {
   return c.json({ requestedCount: result.meta.changes ?? 0 });
 });
 
-app.get("/api/clips/:clipId/preview", async (c) => {
+apiRoutes.get("/clips/:clipId/preview", async (c) => {
   const clip = await c.env.DB.prepare(
     "SELECT output_key AS outputKey FROM clips WHERE id = ?1 AND user_id = ?2",
   ).bind(c.req.param("clipId"), c.get("user").id).first<{ outputKey: string }>();
@@ -1215,7 +1557,7 @@ app.get("/api/clips/:clipId/preview", async (c) => {
   });
 });
 
-app.get("/api/clips/:clipId/download", async (c) => {
+apiRoutes.get("/clips/:clipId/download", async (c) => {
   const clip = await c.env.DB.prepare(
     "SELECT output_key AS outputKey, title FROM clips WHERE id = ?1 AND user_id = ?2",
   ).bind(c.req.param("clipId"), c.get("user").id).first<{ outputKey: string; title: string }>();
@@ -1234,7 +1576,7 @@ app.get("/api/clips/:clipId/download", async (c) => {
   });
 });
 
-app.get("/api/clips", async (c) => {
+apiRoutes.get("/clips", async (c) => {
   const result = await c.env.DB.prepare(
     "SELECT id, job_id AS jobId, title, description, hashtags_json AS hashtagsJson, duration_seconds AS durationSeconds, aspect_ratio AS aspectRatio, size_bytes AS sizeBytes, created_at AS createdAt FROM clips WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 100",
   )
@@ -1242,6 +1584,9 @@ app.get("/api/clips", async (c) => {
     .all();
   return c.json({ clips: result.results });
 });
+
+app.route("/api", apiRoutes);
+app.route("/mobile/v1/api", apiRoutes);
 
 app.onError((error, c) => {
   console.error(JSON.stringify({ level: "error", message: error.message, path: c.req.path }));

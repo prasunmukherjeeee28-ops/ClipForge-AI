@@ -9,7 +9,11 @@ API_SOURCE = (ROOT / "apps/api/src/index.ts").read_text(encoding="utf-8")
 
 
 def production_update_sql(route: str) -> str:
-    marker = f'app.post("{route}"'
+    if route.startswith("/api/"):
+        method_path = route.removeprefix("/api")
+        marker = f'apiRoutes.post("{method_path}"'
+    else:
+        marker = f'app.post("{route}"'
     section = API_SOURCE.split(marker, 1)[1]
     match = re.search(r'^\s+"(UPDATE jobs SET [^"]+)",\s*$', section, re.MULTILINE)
     assert match, f"Could not find production update SQL for {route}"
@@ -192,7 +196,7 @@ def test_multipart_parts_are_unique_per_asset_and_part_number() -> None:
         raise AssertionError("duplicate multipart part number was accepted")
 
 def source_asset_delete_reservation_sql() -> str:
-    marker = 'app.delete("/api/source-assets/:assetId"'
+    marker = 'apiRoutes.delete("/source-assets/:assetId"'
     section = API_SOURCE.split(marker, 1)[1]
     match = re.search(r'^\s+"(UPDATE source_assets SET [^"]+)",\s*$', section, re.MULTILINE)
     assert match, "Could not find atomic source asset delete reservation SQL"

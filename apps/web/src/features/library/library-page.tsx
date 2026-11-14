@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { Browser } from "@capacitor/browser";
+import { isNativePlatform } from "@/lib/platform";
 import {
   LayoutGrid,
   List,
@@ -22,6 +24,7 @@ import {
   cancelSourceJob,
   getClipDownloadUrl,
   getClipPreviewUrl,
+  createClipMediaUrls,
   getClips,
   getJobs,
   type ClipRecord,
@@ -56,13 +59,19 @@ function ClipCard({
   clip,
   view,
   onPreview,
+  onDownload,
 }: {
   clip: ClipRecord;
   view: View;
   onPreview: (clip: ClipRecord) => void;
+  onDownload: (clip: ClipRecord) => void;
 }) {
   const downloadUrl = getClipDownloadUrl(clip.id);
-  const download = (
+  const download = isNativePlatform() ? (
+    <Button size="sm" variant="secondary" onClick={() => onDownload(clip)}>
+      <Download className="h-4 w-4" /> Download
+    </Button>
+  ) : (
     <a
       href={downloadUrl}
       target="_blank"
@@ -146,6 +155,7 @@ export function LibraryPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [previewClip, setPreviewClip] = useState<ClipRecord | null>(null);
+  const [previewMedia, setPreviewMedia] = useState<{ previewUrl: string; downloadUrl: string } | null>(null);
   const [cancellingJob, setCancellingJob] = useState<string | null>(null);
 
   const refresh = useCallback(async (quiet = false) => {
@@ -177,6 +187,31 @@ export function LibraryPage() {
       return true;
     });
   }, [clips, query, filter]);
+
+  const handlePreview = async (clip: ClipRecord) => {
+    try {
+      const media = isNativePlatform()
+        ? await createClipMediaUrls(clip.id)
+        : { previewUrl: getClipPreviewUrl(clip.id), downloadUrl: getClipDownloadUrl(clip.id) };
+      setPreviewMedia({ previewUrl: media.previewUrl, downloadUrl: media.downloadUrl });
+      setPreviewClip(clip);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not prepare this clip preview.");
+    }
+  };
+
+  const handleDownload = async (clip: ClipRecord) => {
+    try {
+      if (isNativePlatform()) {
+        const media = await createClipMediaUrls(clip.id);
+        await Browser.open({ url: media.downloadUrl });
+      } else {
+        window.open(getClipDownloadUrl(clip.id), "_blank", "noopener,noreferrer");
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not prepare this download.");
+    }
+  };
 
   const activeJobs = jobs
     .filter((job) => job.status === "queued" || job.status === "processing")
@@ -272,20 +307,20 @@ export function LibraryPage() {
         />
       ) : view === "grid" ? (
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-          {filteredClips.map((clip) => <ClipCard key={clip.id} clip={clip} view="grid" onPreview={setPreviewClip} />)}
+          {filteredClips.map((clip) => <ClipCard key={clip.id} clip={clip} view="grid" onPreview={(clip) => { void handlePreview(clip); }} onDownload={(clip) => { void handleDownload(clip); }} />)}
         </div>
       ) : (
         <Card className="divide-y divide-white/[0.05]">
-          {filteredClips.map((clip) => <ClipCard key={clip.id} clip={clip} view="list" onPreview={setPreviewClip} />)}
+          {filteredClips.map((clip) => <ClipCard key={clip.id} clip={clip} view="list" onPreview={(item) => { void handlePreview(item); }} onDownload={(item) => { void handleDownload(item); }} />)}
         </Card>
       )}
 
-      <Dialog open={!!previewClip} onOpenChange={(open) => { if (!open) setPreviewClip(null); }} title={previewClip?.title ?? "Clip preview"} className="max-w-3xl">
+      <Dialog open={!!previewClip} onOpenChange={(open) => { if (!open) { setPreviewClip(null); setPreviewMedia(null); } }} title={previewClip?.title ?? "Clip preview"} className="max-w-3xl">
         {previewClip ? (
           <div className="space-y-3">
             <video
               key={previewClip.id}
-              src={getClipPreviewUrl(previewClip.id)}
+              src={previewMedia?.previewUrl ?? getClipPreviewUrl(previewClip.id)}
               controls
               playsInline
               preload="metadata"
@@ -293,7 +328,7 @@ export function LibraryPage() {
             />
             <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-500">
               <span>{formatDuration(previewClip.durationSeconds)} · 9:16 · {formatBytes(previewClip.sizeBytes)}</span>
-              <a href={getClipDownloadUrl(previewClip.id)} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center gap-2 rounded-lg bg-violet-550 px-3 text-xs font-semibold text-white transition hover:bg-violet-450">
+              <a href={previewMedia?.downloadUrl ?? getClipDownloadUrl(previewClip.id)} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center gap-2 rounded-lg bg-violet-550 px-3 text-xs font-semibold text-white transition hover:bg-violet-450">
                 <Download className="h-4 w-4" /> Download MP4
               </a>
             </div>
