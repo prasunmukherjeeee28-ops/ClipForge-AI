@@ -25,7 +25,6 @@ migrations_dir = "../../database/migrations"
 [vars]
 ACCESS_TEAM_DOMAIN = "little-base-dedb.cloudflareaccess.com"
 ACCESS_AUD = "72fac205e59e7770aaecb3ec09d3cac80c31a4e1146b785eef23f3322600ff2c"
-ALLOWED_EMAILS = "first-user@example.com,second-user@example.com"
 B2_ENDPOINT = "https://s3.us-east-005.backblazeb2.com"
 B2_REGION = "us-east-005"
 B2_BUCKET = "clipforge-private-media"

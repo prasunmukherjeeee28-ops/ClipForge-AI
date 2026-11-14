@@ -90,7 +90,7 @@ const env = {
   DB: makeDatabase(),
   ACCESS_TEAM_DOMAIN: "clipforge.example.cloudflareaccess.com",
   ACCESS_AUD: "clipforge-test-audience",
-  ALLOWED_EMAILS: "alice@example.test,bob@example.test",
+  INVITE_CODES: JSON.stringify(["alice-test-invite-code-012345678901", "bob-test-invite-code-012345678901"]),
 };
 
 async function request(
@@ -153,12 +153,12 @@ describe("two-account data isolation", () => {
   });
 });
 
-describe("Cloudflare Access fail-closed behavior", () => {
-  it("rejects a valid Access identity that is not one of the two allowed accounts", async () => {
+describe("invite-only Cloudflare Access enrollment", () => {
+  it("requires a one-time invite for a valid Access identity not yet registered", async () => {
     const response = await request("/api/jobs", "eve-token");
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({
-      error: { message: "This account is not authorized to use ClipForge." },
+      error: { message: "A one-time invite code is required to claim an account." },
     });
   });
 
@@ -174,10 +174,8 @@ describe("Cloudflare Access fail-closed behavior", () => {
     expect(response.status).toBe(503);
   });
 
-  it("fails closed unless exactly two account emails are configured", async () => {
-    const response = await request("/api/jobs", "alice-token", {
-      ALLOWED_EMAILS: "alice@example.test",
-    });
+  it("fails closed when exactly two valid invite codes are not configured", async () => {
+    const response = await request("/api/jobs", "eve-token", { INVITE_CODES: "[]" });
     expect(response.status).toBe(503);
   });
 });

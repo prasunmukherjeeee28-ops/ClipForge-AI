@@ -4,7 +4,7 @@ Cloudflare Worker API for the private two-account ClipForge workspace.
 
 ## Runtime responsibilities
 
-- Cloudflare Access JWT verification, issuer/audience validation and an explicit two-email allowlist.
+- Cloudflare Access JWT verification with issuer/audience validation and private invite-only enrollment for exactly two Google identities.
 - D1-backed user provisioning, job state, source metadata, upload parts, processor leases, candidates and clip records.
 - Owner-scoped multipart uploads of creator-authorized source files to private object storage.
 - Atomic processor job claiming from D1; D1 is the only dispatch source (no Cloudflare Queue).
@@ -48,7 +48,7 @@ Processor routes cover authenticated ping, claim, heartbeat, progress, source me
 
 ## Two-account isolation
 
-Set `ALLOWED_EMAILS` to exactly the two intended Cloudflare Access email identities. Do not place the app behind an open sign-up flow. User-facing D1 reads and writes derive the user ID from the verified Access identity; clients never choose their own user ID. Source assets, jobs, candidates, clips and Backblaze B2 object storage object keys are owner-scoped.
+New Google identities must present one of two single-use invite codes on their first authenticated API request. The Worker stores only SHA-256 hashes of claimed codes in D1, and a D1 trigger caps the workspace at two users. Existing users continue to sign in without an invite code. A Google email address is not hardcoded or allowlisted; the verified Google subject is the stable account identity. Do not expose invite codes in source control, frontend build variables, logs or public messages. User-facing D1 reads and writes derive the user ID from the verified Access identity; clients never choose their own user ID. Source assets, jobs, candidates, clips and Backblaze B2 object storage object keys are owner-scoped.
 
 ## Cloudflare configuration
 
@@ -57,39 +57,46 @@ The Worker serves both the Vite frontend (`apps/web/dist`) and the Hono API from
 1. Use the existing `clipforge-app-db` D1 database; its ID is configured in `wrangler.toml`.
 2. Enable Backblaze B2 object storage and create a private bucket named `clipforge-private-media` (do not enable public access or an `r2.dev` URL). Create a bucket-restricted S3 application key, not the master key. The adapter needs `readFiles`, `writeFiles`, and `deleteFiles`. Backblaze documents `writeFiles` as enabling S3 multipart create/upload/complete/abort calls. Its app-key guidance also says bucket-restricted keys need `listAllBucketNames` for SDK/integration compatibility; include `listBuckets` as well so the integration can distinguish missing-object responses from access-denied responses. Do not grant `listFiles`, bucket-write, or bucket-delete permissions unless a later feature explicitly requires them. Keep the key scoped to this one bucket and verify the exact permission set with the private-bucket smoke test before production.
 3. Configure a Cloudflare Access application for the app/API and restrict it to the two intended users.
-4. Replace `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` and `ALLOWED_EMAILS` placeholders with the actual Access team domain, application audience and two email addresses.
+4. Set `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` to the actual Access team domain and application audience. Configure Google as the allowed identity provider in the Cloudflare Access application.
 5. Set the Worker secret `PROCESSOR_SHARED_SECRET` to a random value of at least 32 characters. Supply the same value only to the private processor host.
-6. The nine migrations have already been applied to `clipforge-app-db`; verify the remote migration list before making schema changes.
-7. Run `npm install` and `npm run typecheck` in this directory. Set the two configured email identities and Access values without committing private addresses or secrets. Then run `npm run deploy` only after all bindings, secrets and Access settings are correct.
+6. The existing migrations `0001`–`0009` are already applied to `clipforge-app-db`. The deploy command applies any pending migrations, including `0010_invite_claims.sql`, before deploying the Worker.
+7. Run `npm install` and `npm run typecheck` in this directory. Confirm the Access domain/audience and configure the four Worker secrets. Then run `npm run deploy` only after all bindings, secrets and Access settings are correct.
 
 Do not deploy with placeholder Access settings. Keep Backblaze B2 object storage private. B2 buckets are versioned: a normal S3 `DeleteObject` creates a delete marker rather than immediately erasing every older version. Configure a lifecycle rule to expire noncurrent versions after a short retention period (for example, one day) and abort incomplete multipart uploads after a short period. Treat app-level deletion as immediately hidden from users, but not as immediate physical erasure until the lifecycle policy runs. Never put credentials in this file, `wrangler.toml`, GitHub source, frontend variables or a committed environment file.
 
 ## Deployment preflight
 
-Before deployment, replace every placeholder in `wrangler.toml` with the real Cloudflare Access hostname, application audience, exactly two distinct allowed email addresses, and the Backblaze B2 region, endpoint and private bucket name. The deploy command runs `scripts/deploy-preflight.mjs` first and stops before building or deploying if those values are missing, placeholders, malformed, or point at the wrong D1 database. The check validates configuration syntax; it cannot prove that the Access application or B2 bucket exists.
+Before deployment, verify the Cloudflare Access hostname and application audience, and the Backblaze B2 region, endpoint and private bucket name in `wrangler.toml`. The deploy command runs `scripts/deploy-preflight.mjs` first and stops before building or deploying if those values are missing, placeholders, malformed, or point at the wrong D1 database. The check validates configuration syntax; it cannot prove that the Access application or B2 bucket exists.
 
-The static configuration check runs automatically:
+The static configuration check runs automatically. The deploy command first verifies the required Worker runtime secret names, then builds the frontend, applies unapplied D1 migrations remotely, and deploys the Worker. It stops before migration or deployment if any required secret is missing:
 
 ```bash
 npm run deploy
 ```
 
-After the first Worker deployment, install the three required secrets without putting their values in source control:
+Before the first usable deployment, configure the following Worker runtime secrets without putting their values in source control. `INVITE_CODES` must be a JSON array containing exactly two distinct random strings, each at least 32 characters long. Keep one code for each account; share the second code privately with the invited friend. Do not paste either code into GitHub, a frontend variable or this chat.
 
 ```bash
 npx wrangler secret put PROCESSOR_SHARED_SECRET
 npx wrangler secret put B2_ACCESS_KEY_ID
 npx wrangler secret put B2_SECRET_ACCESS_KEY
+npx wrangler secret put INVITE_CODES
 npm run verify:secrets
 ```
 
-`verify:secrets` checks only secret names and never prints their values. Set the same `PROCESSOR_SHARED_SECRET` in the isolated processor host environment. Do not start the processor or accept media jobs until the private B2 bucket, restricted B2 key, Access policy and all three Worker secrets are configured and independently verified.
+`verify:secrets` checks only secret names and never prints their values. It is run automatically by `npm run deploy` before any remote migration or Worker deployment. Set the same `PROCESSOR_SHARED_SECRET` in the isolated processor host environment. Do not start the processor or accept media jobs until the private B2 bucket, restricted B2 key, Access policy and all four Worker secrets are configured and independently verified.
 ## Processor deployment
 
 The separate Python processor has its own Docker image and single-instance Compose service. See `services/processor/README.md`. The processor is deliberately not deployed as a Cloudflare Worker because FFmpeg and faster-whisper require a normal Linux runtime and persistent local scratch/model storage.
 
-## Current cloud setup status
+## Workers Builds and PR preview safety
 
-Cloudflare setup has begun, but the app is not deployed. The dedicated `clipforge-app-db` D1 database has been created in APAC and migrations `0001` through `0009` have been applied. The legacy `clipforge-db` database was left untouched. Cloudflare R2 activation was unavailable, so the project switched to Backblaze B2; B2 is not yet enabled for this project and no bucket or application key has been created. No `clipforge-api` Worker is deployed. The previously existing `morrow-backend` Worker was deleted with authorization; no other Workers were changed.
+Cloudflare Workers Builds is connected to the `main` branch with `apps/api` as its root directory. A merge to `main` triggers the production deploy command; do not merge while the runtime secrets below are missing.
 
-Cloudflare Access is not yet configured for the two identities, the processor host has not been selected, and no end-to-end media job has been run. The app is not operational until a private B2 bucket and restricted application key are configured, Access is restricted to exactly the two intended accounts, the Worker and processor are deployed, and an authorized media job succeeds through private clip download.
+PR Preview builds are intentionally disabled. This app uses a private production D1 database and Backblaze B2 storage. Wrangler Preview requires its own `[previews]` configuration and isolated bindings. Do not enable PR previews until a separate preview D1 database, preview object-storage bucket, and preview secrets/access policy have been configured and verified. Never point a public PR preview at the production database or private media bucket.
+
+Cloudflare Workers Builds environment variables are build-time values, not Worker runtime secrets. Do not put `INVITE_CODES`, B2 credentials, or processor credentials in Build settings. Configure these four values as Worker runtime secrets using the commands above, then verify their names with `npm run verify:secrets`. The verification command must report all four names before the production deploy is run.
+
+## Deployment status
+
+The source tree and Cloudflare account can change independently. Verify the current Worker, D1 migrations, Backblaze bucket/key, Access application and runtime secret names in their respective dashboards immediately before deployment. This README is an implementation guide, not a live inventory of account resources. The app is not ready for real jobs until the Worker and processor are deployed with all required secrets and an authorized VOD completes the end-to-end private upload, clip generation, preview and download flow.
