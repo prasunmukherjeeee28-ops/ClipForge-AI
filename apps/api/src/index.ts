@@ -87,6 +87,15 @@ async function sha256Hex(value: string): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+function constantTimeStringEqual(left: string, right: string): boolean {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index++) {
+    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+  return difference === 0;
+}
+
 function hexToBytes(value: string): Uint8Array | null {
   if (!/^[a-f0-9]{64}$/i.test(value)) return null;
   const bytes = new Uint8Array(32);
@@ -133,9 +142,12 @@ function jsonError(c: AppContext, message: string, status: 400 | 401 | 403 | 404
 function inviteCodes(env: Bindings): string[] {
   try {
     const parsed: unknown = JSON.parse(env.INVITE_CODES || "");
-    return Array.isArray(parsed) && parsed.length === 2 &&
-      parsed.every((code) => typeof code === "string" && code.length >= 32 && code.length <= 256) &&
-      parsed[0] !== parsed[1] ? parsed : [];
+    if (!Array.isArray(parsed) || parsed.length !== 2 || !parsed.every((code) => typeof code === "string")) {
+      return [];
+    }
+    const codes = parsed.map((code: string) => code.trim());
+    return codes.every((code) => code.length >= 32 && code.length <= 256) &&
+      codes[0] !== codes[1] ? codes : [];
   } catch { return []; }
 }
 
@@ -723,7 +735,9 @@ app.use("/api/*", async (c, next) => {
       if (supplied.length < 32 || supplied.length > 256) return jsonError(c, "A one-time invite code is required to claim an account.", 403);
       const hash = await sha256Hex(supplied);
       const hashes = await Promise.all(codes.map((code) => sha256Hex(code)));
-      if (!hashes.includes(hash)) return jsonError(c, "That invite code is invalid.", 403);
+      if (!hashes.some((candidate) => constantTimeStringEqual(candidate, hash))) {
+        return jsonError(c, "That invite code is invalid.", 403);
+      }
 
       // Claim the code and create the user in one D1 transaction. If the
       // two-user trigger or a uniqueness constraint rejects user creation,
