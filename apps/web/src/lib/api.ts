@@ -22,7 +22,8 @@ export interface JobSubmission {
   id: string;
   status: "queued";
   stage: "queued";
-  sourcePlatform: "youtube" | "twitch" | "upload";
+  sourcePlatform: "youtube" | "twitch" | "kick" | "upload";
+  sourceProvider: "youtube" | "twitch" | "kick";
   sourceMode: "url" | "upload";
 }
 
@@ -99,19 +100,31 @@ export async function getCurrentUser(inviteCode?: string): Promise<CurrentUser> 
   return result.user;
 }
 
-export async function createSourceJob(sourceUrl: string, rightsConfirmed: boolean): Promise<JobSubmission> {
+export interface SourceProcessingOptions {
+  captions: boolean;
+}
+
+export async function createSourceJob(
+  sourceUrl: string,
+  rightsConfirmed: boolean,
+  options: SourceProcessingOptions = { captions: true },
+): Promise<JobSubmission> {
   const result = await request<{ jobs: JobSubmission[] }>("/api/jobs", {
     method: "POST",
-    body: JSON.stringify({ urls: [sourceUrl], rightsConfirmed }),
+    body: JSON.stringify({ urls: [sourceUrl], rightsConfirmed, options }),
   });
   if (!result.jobs?.[0]?.id) throw new Error("The API did not create a URL source job.");
   return result.jobs[0];
 }
 
-export async function createUploadJob(assetId: string, rightsConfirmed: boolean): Promise<JobSubmission> {
+export async function createUploadJob(
+  assetId: string,
+  rightsConfirmed: boolean,
+  options: SourceProcessingOptions = { captions: true },
+): Promise<JobSubmission> {
   const result = await request<{ job: JobSubmission }>("/api/jobs/upload", {
     method: "POST",
-    body: JSON.stringify({ sourceAssetId: assetId, rightsConfirmed }),
+    body: JSON.stringify({ sourceAssetId: assetId, rightsConfirmed, options }),
   });
   if (!result.job?.id) throw new Error("The API did not create an upload source job.");
   return result.job;
@@ -215,7 +228,9 @@ export interface ClipRecord {
 export interface JobRecord {
   id: string;
   sourceUrl: string;
-  sourcePlatform: "youtube" | "twitch";
+  sourcePlatform: "youtube" | "twitch" | "kick" | "upload";
+  sourceProvider: "youtube" | "twitch" | "kick";
+  sourceMode: "url" | "upload";
   title: string | null;
   status: "queued" | "processing" | "review" | "completed" | "failed" | "cancelled";
   progress: number;
