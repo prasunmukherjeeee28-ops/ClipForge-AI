@@ -23,7 +23,7 @@ export interface JobSubmission {
   status: "queued";
   stage: "queued";
   sourcePlatform: "youtube" | "twitch" | "kick" | "upload";
-  sourceProvider: "youtube" | "twitch" | "kick";
+  sourceProvider?: "youtube" | "twitch" | "kick";
   sourceMode: "url" | "upload";
 }
 
