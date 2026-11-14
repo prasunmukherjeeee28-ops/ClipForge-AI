@@ -22,6 +22,7 @@ from clipforge_processor.source_adapters import (
         ("https://youtube.com/shorts/dQw4w9WgXcQ", "youtube", "dQw4w9WgXcQ"),
         ("https://www.youtube.com/live/dQw4w9WgXcQ", "youtube", "dQw4w9WgXcQ"),
         ("https://www.twitch.tv/videos/123456789", "twitch", "123456789"),
+        ("https://kick.com/streamer/videos/01a0251f-ef48-702d-9289-d66922da0e84", "kick", "01a0251f-ef48-702d-9289-d66922da0e84"),
     ],
 )
 def test_parse_supported_video_urls(url: str, platform: str, source_id: str) -> None:
@@ -41,6 +42,9 @@ def test_parse_supported_video_urls(url: str, platform: str, source_id: str) -> 
         "https://www.youtube.com/channel/UC123",
         "https://www.twitch.tv/somechannel",
         "https://www.twitch.tv/videos/not-a-number",
+        "https://kick.com/streamer",
+        "https://kick.com/streamer/videos/not-a-uuid",
+        "https://kick.com.evil.example/streamer/videos/01a0251f-ef48-702d-9289-d66922da0e84",
         "https://127.0.0.1/private",
         "file:///etc/passwd",
     ],
@@ -164,3 +168,25 @@ async def test_inspection_requires_platform_credentials() -> None:
     with pytest.raises(SourceInspectionError) as error:
         await inspect_video_url("https://youtu.be/dQw4w9WgXcQ")
     assert error.value.code == "source_credentials_missing"
+
+def test_kick_vod_parser_accepts_only_a_single_video_url() -> None:
+    result = parse_source_reference(
+        "https://www.kick.com/streamer/videos/01a0251f-ef48-702d-9289-d66922da0e84"
+    )
+    assert result.platform == "kick"
+    assert result.source_id == "01a0251f-ef48-702d-9289-d66922da0e84"
+    assert result.canonical_url == (
+        "https://kick.com/streamer/videos/01a0251f-ef48-702d-9289-d66922da0e84"
+    )
+
+
+@pytest.mark.asyncio
+async def test_kick_metadata_does_not_fall_through_to_twitch_api() -> None:
+    with pytest.raises(SourceInspectionError) as error:
+        await inspect_video_url(
+            "https://kick.com/streamer/videos/01a0251f-ef48-702d-9289-d66922da0e84",
+            twitch_client_id="test-id",
+            twitch_client_secret="test-secret",
+        )
+    assert error.value.code == "source_metadata_unsupported"
+

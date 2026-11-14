@@ -28,6 +28,8 @@ def make_db() -> sqlite3.Connection:
     db.executescript((ROOT / "database/migrations/0007_transcription.sql").read_text())
     db.executescript((ROOT / "database/migrations/0008_moment_candidates.sql").read_text())
     db.executescript((ROOT / "database/migrations/0009_private_clip_storage.sql").read_text())
+    db.executescript((ROOT / "database/migrations/0012_separate_source_modes.sql").read_text())
+    db.executescript((ROOT / "database/migrations/0013_source_provider.sql").read_text())
     db.execute(
         "INSERT INTO users (id, auth_subject, email) VALUES ('user-1', 'subject-1', 'one@example.com')"
     )

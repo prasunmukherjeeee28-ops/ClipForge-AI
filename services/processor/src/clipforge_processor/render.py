@@ -119,6 +119,7 @@ def render_vertical_clip(
     timeout_seconds: float = 900,
     max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
     threads: int = 2,
+    captions_enabled: bool = True,
     cancel_event: threading.Event | None = None,
 ) -> RenderedClip:
     """Render a bounded 1080x1920 MP4 with full-frame gameplay and synchronized captions.
@@ -153,17 +154,22 @@ def render_vertical_clip(
         temporary_dir = Path(temporary)
         captions_path = temporary_dir / "captions.srt"
         partial_output = temporary_dir / "render.partial.mp4"
-        caption_count = _write_srt(transcript_path, captions_path, start_seconds, end_seconds)
-        subtitles_filter = (
-            f"subtitles=filename='{_filter_path(captions_path)}':"
-            "force_style='FontName=Arial,FontSize=18,Outline=2,Shadow=1,Alignment=2,MarginV=180'"
+        video_filter = (
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,fps=30"
         )
+        if captions_enabled:
+            _write_srt(transcript_path, captions_path, start_seconds, end_seconds)
+            subtitles_filter = (
+                f"subtitles=filename='{_filter_path(captions_path)}':"
+                "force_style='FontName=Arial,FontSize=18,Outline=2,Shadow=1,Alignment=2,MarginV=180'"
+            )
+            video_filter += f",{subtitles_filter}"
         filter_complex = (
             "[0:v]split=2[background][foreground];"
             "[background]scale=1080:1920:force_original_aspect_ratio=increase,"
             "crop=1080:1920,boxblur=24:12[bg];"
             "[foreground]scale=1080:1920:force_original_aspect_ratio=decrease[fg];"
-            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,fps=30,{subtitles_filter}[v]"
+            f"{video_filter}[v]"
         )
         command = [
             ffmpeg_binary, "-hide_banner", "-nostdin", "-y",
