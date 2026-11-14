@@ -17,7 +17,7 @@ from .moments import detect_moments
 from .moment_scoring import LocalHeuristicAdapter, MomentEvidence
 from .semantic_scoring import GeminiSemanticAdapter
 from .render import render_vertical_clip
-from .source_adapters import SourceInspectionError, inspect_video_url
+from .source_download import SourceDownloadError, download_public_vod
 from .transcription_runner import run_transcription_process
 
 T = TypeVar("T")
@@ -275,8 +275,11 @@ async def run_once() -> int:
         lease = claimed["lease"]
         job_id = job["id"]
         user_id = job["userId"]
-        source_asset_id = job["sourceAssetId"]
-        lease_id = lease["leaseId"]
+        source_mode = job.get("sourceMode", "upload")
+        if source_mode not in {"url", "upload"}:
+            raise RuntimeError("unsupported_source_mode")
+        source_asset_id = job.get("sourceAssetId") or f"url-{job_id}"
+        lease_id = lease["leaseId"
         lease_token = lease["leaseToken"]
         stop_heartbeat = asyncio.Event()
         cancelled = asyncio.Event()
@@ -291,49 +294,52 @@ async def run_once() -> int:
             source_path = job_dir / "source.upload"
             audio_path = job_dir / "audio.wav"
 
-            metadata = await _with_lease(
-                inspect_video_url(
-                    job["sourceUrl"],
-                    youtube_api_key=settings.youtube_data_api_key,
-                    twitch_client_id=settings.twitch_client_id,
-                    twitch_client_secret=settings.twitch_client_secret,
-                ),
-                cancelled,
-                lease_lost,
-            )
-            await _with_lease(
-                client.report_source_metadata(
-                    job_id, lease_id, lease_token,
-                    source_id=metadata.source_id,
-                    source_platform=metadata.platform,
-                    source_type=metadata.source_type,
-                    title=metadata.title,
-                    duration_seconds=metadata.duration_seconds,
-                    published_at=metadata.published_at,
-                ),
-                cancelled,
-                lease_lost,
-            )
-
-            if metadata.source_type == "live":
-                result = await client.fail(job_id, lease_id, lease_token, "live_source_not_supported")
-                outcome = "live_source_not_supported"
-                print("Source inspection finished:", json.dumps({"jobId": job_id, "outcome": outcome, "result": result}))
-                return 0
-
             await _with_lease(
                 client.report_progress(job_id, lease_id, lease_token, "downloading_source", 8),
                 cancelled,
                 lease_lost,
             )
-            source_size = await _with_lease(
-                client.download_source_asset(
-                    job_id, lease_id, lease_token, source_path,
-                    max_bytes=2_147_483_648,
-                ),
-                cancelled,
-                lease_lost,
-            )
+            if source_mode == "url":
+                download_cancel = threading.Event()
+                try:
+                    imported = await _with_lease(
+                        asyncio.to_thread(
+                            download_public_vod,
+                            job["sourceUrl"],
+                            source_path,
+                            max_bytes=2_147_483_648,
+                            max_duration_seconds=settings.max_video_duration_seconds,
+                            cancel_event=download_cancel,
+                        ),
+                        cancelled,
+                        lease_lost,
+                    )
+                except BaseException:
+                    download_cancel.set()
+                    raise
+                await _with_lease(
+                    client.report_source_metadata(
+                        job_id, lease_id, lease_token,
+                        source_id=imported.source_id,
+                        source_platform=imported.platform,
+                        source_type="video",
+                        title=imported.title,
+                        duration_seconds=imported.duration_seconds,
+                        published_at=imported.published_at,
+                    ),
+                    cancelled,
+                    lease_lost,
+                )
+                source_size = imported.size_bytes
+            else:
+                source_size = await _with_lease(
+                    client.download_source_asset(
+                        job_id, lease_id, lease_token, source_path,
+                        max_bytes=2_147_483_648,
+                    ),
+                    cancelled,
+                    lease_lost,
+                )
 
             await _with_lease(
                 client.report_progress(job_id, lease_id, lease_token, "validating_media", 12),
