@@ -38,7 +38,7 @@ def test_run_once_completes_claimed_vod_through_private_clip_registration(monkey
             self.events.append("claim")
             return {
                 "job": {
-                    "id": job_id, "userId": user_id, "sourceAssetId": asset_id,
+                    "id": job_id, "userId": user_id, "sourceAssetId": asset_id, "sourceMode": "upload",
                     "sourceUrl": "https://youtu.be/abcdefghijk",
                 },
                 "lease": {"leaseId": "lease-1", "leaseToken": "token-1"},
@@ -80,12 +80,6 @@ def test_run_once_completes_claimed_vod_through_private_clip_registration(monkey
         client_holder["client"] = FakeClient(*args, **kwargs)
         return client_holder["client"]
 
-    async def fake_inspect(*args, **kwargs):
-        return SimpleNamespace(
-            source_id="abcdefghijk", platform="youtube", source_type="video",
-            title="Authorized VOD", duration_seconds=60, published_at=None,
-        )
-
     async def fake_extract(source, output, **kwargs):
         Path(output).write_bytes(b"normalized-audio")
         return len(b"normalized-audio")
@@ -113,7 +107,6 @@ def test_run_once_completes_claimed_vod_through_private_clip_registration(monkey
 
     monkeypatch.setattr(worker_module.Settings, "from_env", lambda: settings)
     monkeypatch.setattr(worker_module, "ProcessorClient", make_client)
-    monkeypatch.setattr(worker_module, "inspect_video_url", fake_inspect)
     async def fake_probe(*args, **kwargs):
         return SimpleNamespace(
             container="mov,mp4", video_codec="h264", audio_codec="aac",
@@ -132,7 +125,7 @@ def test_run_once_completes_claimed_vod_through_private_clip_registration(monkey
 
     assert result == 0
     events = client_holder["client"].events
-    assert events.index("ping") < events.index("claim") < events.index("source_metadata")
+    assert events.index("ping") < events.index("claim") < events.index("source_download")
     assert events.index("source_download") < events.index("transcription_ready")
     assert events.index("transcription_ready") < events.index("clip_upload_begin") < events.index("clips_ready")
     assert events[-1] == "close"
