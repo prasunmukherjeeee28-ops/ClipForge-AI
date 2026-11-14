@@ -76,7 +76,7 @@ function ClipCard({
       href={downloadUrl}
       target="_blank"
       rel="noreferrer"
-      aria-label={\`Download \${clip.title}\`}
+      aria-label={`Download ${clip.title}`}
       className="inline-flex h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.06] px-3 text-xs font-medium text-zinc-200 transition hover:bg-white/[0.1]"
     >
       <Download className="h-4 w-4" /> Download
