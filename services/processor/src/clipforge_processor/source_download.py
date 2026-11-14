@@ -9,13 +9,13 @@ import threading
 
 from yt_dlp import YoutubeDL
 
-from .source_adapters import SourceInspectionError, parse_source_reference
+from .source_adapters import Platform, SourceInspectionError, parse_source_reference
 
 
 @dataclass(frozen=True)
 class PublicVODDownload:
     source_id: str
-    platform: str
+    platform: Platform
     title: str
     duration_seconds: int | None
     published_at: str | None
@@ -77,6 +77,12 @@ def download_public_vod(
         live_status = info.get("live_status")
         if info.get("is_live") or live_status in {"is_live", "is_upcoming"}:
             return "Live and upcoming streams are not supported."
+        age_limit = info.get("age_limit")
+        if info.get("is_mature") is True or (isinstance(age_limit, (int, float)) and age_limit >= 18):
+            return "Age-restricted videos cannot be imported by ClipForge."
+        availability = info.get("availability")
+        if availability in {"private", "subscriber_only", "premium_only", "needs_auth"}:
+            return "This video is private or access-restricted. Use an authorized export instead."
         duration = info.get("duration")
         if isinstance(duration, (int, float)) and duration > max_duration_seconds:
             return "This video is longer than ClipForge's 12-hour source limit."
@@ -132,6 +138,17 @@ def download_public_vod(
                 raise SourceDownloadError(
                     "live_source_not_supported",
                     "Live and upcoming streams are not supported yet.",
+                )
+            age_limit = info.get("age_limit")
+            if info.get("is_mature") is True or (isinstance(age_limit, (int, float)) and age_limit >= 18):
+                raise SourceDownloadError(
+                    "source_age_restricted",
+                    "Age-restricted videos cannot be imported by ClipForge.",
+                )
+            if info.get("availability") in {"private", "subscriber_only", "premium_only", "needs_auth"}:
+                raise SourceDownloadError(
+                    "source_access_restricted",
+                    "This video is private or access-restricted. Use an authorized export instead.",
                 )
 
             candidate_name = info.get("filepath") or info.get("_filename")
