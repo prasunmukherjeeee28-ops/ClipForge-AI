@@ -134,7 +134,8 @@ function inviteCodes(env: Bindings): string[] {
   try {
     const parsed: unknown = JSON.parse(env.INVITE_CODES || "");
     return Array.isArray(parsed) && parsed.length === 2 &&
-      parsed.every((code) => typeof code === "string" && code.length >= 32) ? parsed : [];
+      parsed.every((code) => typeof code === "string" && code.length >= 32 && code.length <= 256) &&
+      parsed[0] !== parsed[1] ? parsed : [];
   } catch { return []; }
 }
 
@@ -724,22 +725,23 @@ app.use("/api/*", async (c, next) => {
       const hashes = await Promise.all(codes.map((code) => sha256Hex(code)));
       if (!hashes.includes(hash)) return jsonError(c, "That invite code is invalid.", 403);
 
-      await c.env.DB.prepare("INSERT INTO invite_claims (invite_hash, auth_subject) VALUES (?1, ?2) ON CONFLICT(invite_hash) DO NOTHING")
-        .bind(hash, subject).run();
+      // Claim the code and create the user in one D1 transaction. If the
+      // two-user trigger or a uniqueness constraint rejects user creation,
+      // the invite claim rolls back too and the code is not accidentally burned.
+      await c.env.DB.batch([
+        c.env.DB.prepare("INSERT INTO invite_claims (invite_hash, auth_subject) VALUES (?1, ?2) ON CONFLICT(invite_hash) DO NOTHING")
+          .bind(hash, subject),
+        c.env.DB.prepare("INSERT INTO users (id, auth_subject, email, display_name) SELECT ?1, ?2, ?3, ?4 WHERE EXISTS (SELECT 1 FROM invite_claims WHERE invite_hash = ?5 AND auth_subject = ?2) ON CONFLICT(auth_subject) DO NOTHING")
+          .bind(uuid(), subject, email, typeof payload.name === "string" ? payload.name.slice(0, 100) : null, hash),
+      ]);
+
       const claim = await c.env.DB.prepare("SELECT auth_subject AS authSubject FROM invite_claims WHERE invite_hash = ?1")
         .bind(hash).first<{ authSubject: string }>();
       if (!claim || claim.authSubject !== subject) return jsonError(c, "That invite code has already been used.", 403);
 
-      const otherClaim = await c.env.DB.prepare("SELECT invite_hash FROM invite_claims WHERE auth_subject = ?1 AND invite_hash != ?2 LIMIT 1")
-        .bind(subject, hash).first();
-      const count = await c.env.DB.prepare("SELECT COUNT(*) AS count FROM users").first<{ count: number }>();
-      if (otherClaim || (count?.count ?? 0) >= 2) return jsonError(c, "Both ClipForge account slots are already claimed.", 403);
-
-      await c.env.DB.prepare("INSERT INTO users (id, auth_subject, email, display_name) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(auth_subject) DO NOTHING")
-        .bind(uuid(), subject, email, typeof payload.name === "string" ? payload.name.slice(0, 100) : null).run();
       user = await c.env.DB.prepare("SELECT id, email FROM users WHERE auth_subject = ?1 LIMIT 1")
         .bind(subject).first<{ id: string; email: string }>();
-      if (!user) return jsonError(c, "Could not initialize account.", 500);
+      if (!user) return jsonError(c, "Both account slots are claimed, or this invite could not be used.", 403);
     } else if (user.email !== email) {
       await c.env.DB.prepare("UPDATE users SET email = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2")
         .bind(email, user.id).run();
