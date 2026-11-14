@@ -89,8 +89,14 @@ npm run verify:secrets
 
 The separate Python processor has its own Docker image and single-instance Compose service. See `services/processor/README.md`. The processor is deliberately not deployed as a Cloudflare Worker because FFmpeg and faster-whisper require a normal Linux runtime and persistent local scratch/model storage.
 
-## Current cloud setup status
+## Workers Builds and PR preview safety
 
-Cloudflare setup has begun, but the app is not deployed. The dedicated `clipforge-app-db` D1 database has been created in APAC and migrations `0001` through `0009` have been applied. The legacy `clipforge-db` database was left untouched. Cloudflare R2 activation was unavailable, so the project switched to Backblaze B2; B2 is not yet enabled for this project and no bucket or application key has been created. No `clipforge-api` Worker is deployed. The previously existing `morrow-backend` Worker was deleted with authorization; no other Workers were changed.
+Cloudflare Workers Builds is connected to the `main` branch with `apps/api` as its root directory. A merge to `main` triggers the production deploy command; do not merge while the runtime secrets below are missing.
 
-Cloudflare Access is not yet configured for the two identities, the processor host has not been selected, and no end-to-end media job has been run. The app is not operational until a private B2 bucket and restricted application key are configured, Access is restricted to exactly the two intended accounts, the Worker and processor are deployed, and an authorized media job succeeds through private clip download.
+PR Preview builds are intentionally disabled. This app uses a private production D1 database and Backblaze B2 storage. Wrangler Preview requires its own `[previews]` configuration and isolated bindings. Do not enable PR previews until a separate preview D1 database, preview object-storage bucket, and preview secrets/access policy have been configured and verified. Never point a public PR preview at the production database or private media bucket.
+
+Cloudflare Workers Builds environment variables are build-time values, not Worker runtime secrets. Do not put `INVITE_CODES`, B2 credentials, or processor credentials in Build settings. Configure these four values as Worker runtime secrets using the commands above, then verify their names with `npm run verify:secrets`. The verification command must report all four names before the production deploy is run.
+
+## Deployment status
+
+The source tree and Cloudflare account can change independently. Verify the current Worker, D1 migrations, Backblaze bucket/key, Access application and runtime secret names in their respective dashboards immediately before deployment. This README is an implementation guide, not a live inventory of account resources. The app is not ready for real jobs until the Worker and processor are deployed with all required secrets and an authorized VOD completes the end-to-end private upload, clip generation, preview and download flow.
