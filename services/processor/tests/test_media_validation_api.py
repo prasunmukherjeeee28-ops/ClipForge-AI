@@ -30,6 +30,8 @@ def make_db() -> sqlite3.Connection:
         "0007_transcription.sql",
         "0008_moment_candidates.sql",
         "0009_private_clip_storage.sql",
+        "0012_separate_source_modes.sql",
+        "0013_source_provider.sql",
     ):
         db.executescript((ROOT / "database/migrations" / migration).read_text())
     db.executemany(
