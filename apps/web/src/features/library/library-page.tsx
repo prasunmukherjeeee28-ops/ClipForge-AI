@@ -311,7 +311,7 @@ export function LibraryPage() {
         </div>
       ) : (
         <Card className="divide-y divide-white/[0.05]">
-          {filteredClips.map((clip) => <ClipCard key={clip.id} clip={clip} view="list" onPreview={setPreviewClip} />)}
+          {filteredClips.map((clip) => <ClipCard key={clip.id} clip={clip} view="list" onPreview={(item) => { void handlePreview(item); }} onDownload={(item) => { void handleDownload(item); }} />)}
         </Card>
       )}
 
