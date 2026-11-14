@@ -149,7 +149,7 @@ export async function signOutMobile(): Promise<void> {
       await fetch(getApiBase() + "/mobile/v1/auth/logout", {
         method: "POST",
         headers: { Authorization: "Bearer " + token },
-      });
+      }).catch(() => undefined);
     }
   } finally {
     await clearMobileSessionToken();
