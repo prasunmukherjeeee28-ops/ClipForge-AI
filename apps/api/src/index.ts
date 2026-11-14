@@ -1431,7 +1431,7 @@ apiRoutes.post("/jobs", async (c) => {
   const created: Array<{ id: string; status: "queued"; stage: "queued"; sourcePlatform: string; sourceProvider: string; sourceMode: "url" }> = [];
   const inserts = parsed.map((item) => {
     const id = uuid();
-    const platform = item.platform as "youtube" | "twitch";
+    const platform = item.platform as "youtube" | "twitch" | "kick";
     created.push({ id, status: "queued", stage: "queued", sourcePlatform: platform, sourceProvider: platform, sourceMode: "url" });
     return c.env.DB.prepare(
       "INSERT INTO jobs (id, user_id, source_url, source_platform, source_provider, source_mode, source_authorized_at, options_json, status, stage) VALUES (?1, ?2, ?3, ?4, ?5, 'url', CURRENT_TIMESTAMP, ?6, 'queued', 'queued')",
