@@ -40,7 +40,7 @@ export function SettingsPage() {
       </div>
 
       <Card>
-        <CardHeader title="Signed-in account" description="Verified by the ClipForge API using Cloudflare Access" />
+        <CardHeader title="Signed-in account" description="Verified by the ClipForge API using Cloudflare Access on web and a secure mobile session on Android" />
         <div className="flex flex-col gap-3 border-t hairline px-5 py-5 sm:flex-row sm:items-center">
           <span className="glass flex h-12 w-12 items-center justify-center rounded-full">
             <ShieldCheck className="h-5 w-5 text-emerald-300" />
