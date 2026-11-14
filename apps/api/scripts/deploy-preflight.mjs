@@ -77,7 +77,9 @@ export function validateSecretList(secretListText) {
   try { entries = JSON.parse(secretListText); }
   catch { return ["Wrangler did not return valid JSON from the Worker secret list."]; }
   if (!Array.isArray(entries)) return ["Wrangler secret list must be a JSON array."];
-  const names = new Set(entries.map((entry) => entry && entry.name).filter((name) => typeof name === "string"));
+  const names = new Set(entries
+    .filter((entry) => entry && entry.type === "secret_text" && typeof entry.name === "string")
+    .map((entry) => entry.name));
   const required = ["PROCESSOR_SHARED_SECRET", "B2_ACCESS_KEY_ID", "B2_SECRET_ACCESS_KEY", "INVITE_CODES"];
   return required.filter((name) => !names.has(name)).map((name) => "Missing Worker secret: " + name + ".");
 }
