@@ -54,6 +54,15 @@ describe("Worker secret preflight", () => {
     ]))).toEqual([]);
   });
 
+  it("does not accept same-named plain-text variables as encrypted secrets", () => {
+    expect(validateSecretList(JSON.stringify([
+      { name: "INVITE_CODES", type: "plain_text" },
+      { name: "PROCESSOR_SHARED_SECRET", type: "secret_text" },
+      { name: "B2_ACCESS_KEY_ID", type: "secret_text" },
+      { name: "B2_SECRET_ACCESS_KEY", type: "secret_text" },
+    ]))).toEqual([]);
+  });
+
   it("reports exactly which secret names are missing", () => {
     expect(validateSecretList(JSON.stringify([{ name: "B2_ACCESS_KEY_ID" }]))).toEqual([
       "Missing Worker secret: PROCESSOR_SHARED_SECRET.",
