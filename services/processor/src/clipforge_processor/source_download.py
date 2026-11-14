@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import threading
 
 from yt_dlp import YoutubeDL
 
@@ -31,9 +32,7 @@ def _published_at(info: dict[str, Any]) -> str | None:
     upload_date = info.get("upload_date")
     if isinstance(upload_date, str) and len(upload_date) == 8 and upload_date.isdigit():
         try:
-            return datetime.strptime(upload_date, "%Y%m%d").replace(
-                tzinfo=datetime.now().astimezone().tzinfo
-            ).isoformat()
+            return datetime.strptime(upload_date, "%Y%m%d").replace(tzinfo=timezone.utc).isoformat()
         except ValueError:
             return None
     timestamp = info.get("release_timestamp") or info.get("timestamp")
@@ -51,6 +50,7 @@ def download_public_vod(
     *,
     max_bytes: int = 2_147_483_648,
     max_duration_seconds: int = 43_200,
+    cancel_event: threading.Event | None = None,
 ) -> PublicVODDownload:
     """Download one public, non-live VOD from an explicitly supported platform.
 
@@ -86,6 +86,8 @@ def download_public_vod(
         return None
 
     def progress_hook(status: dict[str, Any]) -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise SourceDownloadError("cancelled_by_user", "The source download was cancelled.")
         downloaded = status.get("downloaded_bytes")
         if isinstance(downloaded, (int, float)) and downloaded > max_bytes:
             raise SourceDownloadError(
