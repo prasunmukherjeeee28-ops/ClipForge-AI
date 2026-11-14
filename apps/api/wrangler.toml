@@ -2,6 +2,7 @@ name = "clipforge-api"
 main = "src/index.ts"
 compatibility_date = "2026-11-12"
 workers_dev = true
+preview_urls = false
 
 [observability]
 enabled = true
