@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { KeyRound, LoaderCircle, ShieldAlert, ShieldCheck, LogOut } from "lucide-react";
+import { KeyRound, LoaderCircle, ShieldAlert, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ApiRequestError, getCurrentUser, type CurrentUser } from "@/lib/api";
 import { LoginScreen } from "./login-screen";
@@ -50,7 +50,7 @@ export function SessionGate({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let active = true;
-    let removeListener = () => undefined;
+    let removeListener: () => void = () => {};
     setSession({ status: "loading" });
 
     const applyMobileResult = (result: MobileAuthResult | null) => {
@@ -65,7 +65,12 @@ export function SessionGate({ children }: { children: ReactNode }) {
     };
 
     if (native) {
+      const handledUrls = new Set<string>();
+      let callbackInProgress = false;
       const processCallback = async (url: string) => {
+        if (handledUrls.has(url)) return;
+        handledUrls.add(url);
+        callbackInProgress = true;
         try {
           const result = await handleMobileAuthCallback(url);
           applyMobileResult(result);
@@ -79,10 +84,12 @@ export function SessionGate({ children }: { children: ReactNode }) {
 
       void (async () => {
         try {
-          removeListener = await listenForMobileAuth((url) => { void processCallback(url); });
+          const unsubscribe = await listenForMobileAuth((url) => { void processCallback(url); });
+          if (active) removeListener = unsubscribe;
+          else unsubscribe();
           const user = await restoreMobileSession();
           if (active && user) setSession({ status: "ready", user });
-          else if (active) setSession({ status: "login" });
+          else if (active && !callbackInProgress) setSession({ status: "login" });
 
           const initialUrl = await getInitialMobileUrl();
           if (active && initialUrl) await processCallback(initialUrl);
