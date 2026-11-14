@@ -68,7 +68,7 @@ Do not deploy with placeholder Access settings. Keep Backblaze B2 object storage
 
 Before deployment, verify the Cloudflare Access hostname and application audience, and the Backblaze B2 region, endpoint and private bucket name in `wrangler.toml`. The deploy command runs `scripts/deploy-preflight.mjs` first and stops before building or deploying if those values are missing, placeholders, malformed, or point at the wrong D1 database. The check validates configuration syntax; it cannot prove that the Access application or B2 bucket exists.
 
-The static configuration check runs automatically. The deploy command also applies unapplied D1 migrations remotely before deploying the Worker:
+The static configuration check runs automatically. The deploy command first verifies the required Worker runtime secret names, then builds the frontend, applies unapplied D1 migrations remotely, and deploys the Worker. It stops before migration or deployment if any required secret is missing:
 
 ```bash
 npm run deploy
@@ -84,7 +84,7 @@ npx wrangler secret put INVITE_CODES
 npm run verify:secrets
 ```
 
-`verify:secrets` checks only secret names and never prints their values. Set the same `PROCESSOR_SHARED_SECRET` in the isolated processor host environment. Do not start the processor or accept media jobs until the private B2 bucket, restricted B2 key, Access policy and all four Worker secrets are configured and independently verified.
+`verify:secrets` checks only secret names and never prints their values. It is run automatically by `npm run deploy` before any remote migration or Worker deployment. Set the same `PROCESSOR_SHARED_SECRET` in the isolated processor host environment. Do not start the processor or accept media jobs until the private B2 bucket, restricted B2 key, Access policy and all four Worker secrets are configured and independently verified.
 ## Processor deployment
 
 The separate Python processor has its own Docker image and single-instance Compose service. See `services/processor/README.md`. The processor is deliberately not deployed as a Cloudflare Worker because FFmpeg and faster-whisper require a normal Linux runtime and persistent local scratch/model storage.
