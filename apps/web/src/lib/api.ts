@@ -20,9 +20,10 @@ export class ApiRequestError extends Error {
 
 export interface JobSubmission {
   id: string;
-  status: "review";
-  stage: "awaiting_source_asset";
-  sourcePlatform: "youtube" | "twitch";
+  status: "queued";
+  stage: "queued";
+  sourcePlatform: "youtube" | "twitch" | "upload";
+  sourceMode: "url" | "upload";
 }
 
 export interface SourceAssetUpload {
@@ -98,13 +99,22 @@ export async function getCurrentUser(inviteCode?: string): Promise<CurrentUser> 
   return result.user;
 }
 
-export async function createSourceJob(sourceUrl: string): Promise<JobSubmission> {
+export async function createSourceJob(sourceUrl: string, rightsConfirmed: boolean): Promise<JobSubmission> {
   const result = await request<{ jobs: JobSubmission[] }>("/api/jobs", {
     method: "POST",
-    body: JSON.stringify({ urls: [sourceUrl] }),
+    body: JSON.stringify({ urls: [sourceUrl], rightsConfirmed }),
   });
-  if (!result.jobs?.[0]?.id) throw new Error("The API did not create a source job.");
+  if (!result.jobs?.[0]?.id) throw new Error("The API did not create a URL source job.");
   return result.jobs[0];
+}
+
+export async function createUploadJob(assetId: string, rightsConfirmed: boolean): Promise<JobSubmission> {
+  const result = await request<{ job: JobSubmission }>("/api/jobs/upload", {
+    method: "POST",
+    body: JSON.stringify({ sourceAssetId: assetId, rightsConfirmed }),
+  });
+  if (!result.job?.id) throw new Error("The API did not create an upload source job.");
+  return result.job;
 }
 
 export async function createSourceAsset(file: File): Promise<SourceAssetUpload> {
