@@ -17,7 +17,6 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { cn, formatBytes } from "@/lib/utils";
 import {
-  attachSourceAsset,
   cancelSourceJob,
   completeSourceAsset,
   createSourceAsset,
