@@ -1,7 +1,10 @@
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader } from "@/components/ui/card";
 import { useCurrentUser } from "@/components/auth/session-gate";
-import { LockKeyhole, ShieldCheck, HardDrive, Film, Captions, BrainCircuit } from "lucide-react";
+import { LockKeyhole, ShieldCheck, HardDrive, Film, Captions, BrainCircuit, LogOut } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { useSignOut } from "@/components/auth/session-gate";
+import { isNativePlatform } from "@/lib/platform";
 
 function InfoRow({
   icon: Icon,
@@ -27,6 +30,7 @@ function InfoRow({
 
 export function SettingsPage() {
   const user = useCurrentUser();
+  const signOut = useSignOut();
 
   return (
     <div className="mx-auto max-w-3xl space-y-5">
@@ -45,7 +49,14 @@ export function SettingsPage() {
             <p className="break-all text-sm font-medium text-zinc-100">{user.email}</p>
             <p className="mt-1 text-xs text-zinc-600">Account ID · {user.id}</p>
           </div>
-          <Badge tone="green">Authenticated</Badge>
+          <div className="flex items-center gap-2">
+            <Badge tone="green">Authenticated</Badge>
+            {isNativePlatform() ? (
+              <Button size="sm" variant="ghost" onClick={() => void signOut()}>
+                <LogOut className="h-4 w-4" /> Sign out
+              </Button>
+            ) : null}
+          </div>
         </div>
         <div className="border-t hairline px-5 py-4 text-xs leading-relaxed text-zinc-500">
           ClipForge has no public registration. The API accepts exactly two owner-configured email identities; only your own account's jobs, uploads and clips are returned.
