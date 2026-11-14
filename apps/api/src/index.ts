@@ -724,7 +724,7 @@ app.use("/api/*", async (c, next) => {
 
     const emailOwner = await c.env.DB.prepare("SELECT auth_subject AS authSubject FROM users WHERE email = ?1 LIMIT 1")
       .bind(email).first<{ authSubject: string }>();
-    if (emailOwner && emailOwner.authSubject !== subject) return jsonError(c, "This email is already linked to another ClipForge account.", 403);
+    if (emailOwner && emailOwner.authSubject !== subject) return jsonError(c, "This email is already linked to another ClipForge account.", 409);
 
     let user = await c.env.DB.prepare("SELECT id, email FROM users WHERE auth_subject = ?1 LIMIT 1")
       .bind(subject).first<{ id: string; email: string }>();
