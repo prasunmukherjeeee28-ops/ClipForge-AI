@@ -67,8 +67,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return payload as T;
 }
 
-export async function getCurrentUser(): Promise<CurrentUser> {
-  const result = await request<{ user: CurrentUser }>("/api/me");
+export async function getCurrentUser(inviteCode?: string): Promise<CurrentUser> {
+  const result = await request<{ user: CurrentUser }>("/api/me", inviteCode
+    ? { headers: { "X-ClipForge-Invite": inviteCode.trim() } }
+    : {});
   if (!result.user?.id || !result.user.email) {
     throw new Error("The ClipForge API returned an incomplete account identity.");
   }
