@@ -50,13 +50,14 @@ async function exchangeCode(pending: PendingCode, inviteCode?: string): Promise<
     }),
   });
   const raw = await response.text();
-  let payload: {
+  type ExchangePayload = {
     token?: string;
     user?: CurrentUser;
     error?: { code?: string; message?: string };
-  } | null = null;
+  };
+  let payload: ExchangePayload | null = null;
   try {
-    payload = raw ? JSON.parse(raw) as typeof payload : null;
+    if (raw) payload = JSON.parse(raw) as ExchangePayload;
   } catch {
     throw new Error("ClipForge returned an unreadable response during sign-in.");
   }
@@ -126,9 +127,10 @@ export async function restoreMobileSession(): Promise<CurrentUser | null> {
     headers: { Authorization: "Bearer " + token },
   });
   const raw = await response.text();
-  let payload: { user?: CurrentUser; error?: { message?: string } } | null = null;
+  type SessionPayload = { user?: CurrentUser; error?: { message?: string } };
+  let payload: SessionPayload | null = null;
   try {
-    payload = raw ? JSON.parse(raw) as typeof payload : null;
+    if (raw) payload = JSON.parse(raw) as SessionPayload;
   } catch {
     throw new Error("ClipForge returned an unreadable account response.");
   }
